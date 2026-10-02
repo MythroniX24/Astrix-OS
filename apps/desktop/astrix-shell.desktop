@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Astrix Shell
+Comment=The Astrix user interface
+Exec=astrix-shell
+# NoDisplay is not cosmetic. The shell is the launcher, so an entry for it
+# would put a "Shell" tile in its own grid that, when tapped, would start a
+# second shell competing for the same surface and the same seat. A launcher
+# must never list itself.
+NoDisplay=true
+Terminal=false
+Categories=System;Core;

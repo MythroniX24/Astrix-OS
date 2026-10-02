@@ -1,0 +1,63 @@
+[Unit]
+Description=Astrix OS session launcher (auto-login)
+Documentation=https://github.com/astrix-os/astrix
+# A phone has one user and no login prompt: it goes straight to the home
+# screen. This unit logs that user in and starts the graphical session.
+# On a real device this is replaced by a screen-lock-aware flow; see
+# docs/ARCHITECTURE.md.
+# The session is a phone's home screen: it comes up as soon as the system is
+# usable, and it does not wait for the radio.
+#
+# Being enabled from multi-user.target put it behind network.target, which is
+# ordered after NetworkManager.service. On a machine with a slow network
+# manager that is minutes of black screen before anything is drawn, and on the
+# emulated ARM64 target used to test this it was over thirteen - a boot-time
+# regression that is invisible on a developer host with working connectivity,
+# and precisely the difference between "the compositor starts" and "the
+# compositor is still starting" on the machine that has to prove it.
+#
+# So the launcher is enabled from basic.target and ordered after it directly.
+# Plain default dependencies on purpose: adding DefaultDependencies=no and
+# Before=graphical.target here looked equivalent and was not - with those set,
+# systemd accepted the unit and then never started it, so the phone booted to
+# a black screen with no complaint anywhere. A service pulled into
+# basic.target and ordered after it is the ordinary pattern and is what works.
+After=basic.target systemd-user-sessions.service seatd.service
+Requires=seatd.service
+# astrix-session.target is deliberately NOT in [Unit].
+#
+# Wants= here makes systemd start the target in parallel with this script, so
+# the compositor began creating its Wayland socket before the script had
+# created /run/user/1000 to put it in, and failed with
+#   unable to open lockfile /run/user/1000/astrix-0.lock check permissions
+# The script prepares the session and then starts the target itself, in the
+# right order, once the directory is there.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Auto-login runs as a system unit and uses machinectl, so it does not need to
+# know the user's password. Passwordless autologin is a deliberate, documented
+# development default; a shipping device must require a screen lock (see
+# system/security/README.md).
+ExecStart=/usr/bin/astrix-session start
+ExecStop=/usr/bin/astrix-session stop
+# The launcher only *requests* the session; the compositor and shell run for as
+# long as the user is logged in, so waiting for them to finish would mean
+# waiting forever. See astrix-session: systemctl start is --no-block for the
+# same reason.
+#
+# 90s because the preparation is several D-Bus round trips (runtime dir, linger,
+# seat, session attach, daemon-reload), each individually bounded so a wedged
+# logind cannot hang it. At 30s the launcher was killed mid-preparation and
+# reported Result=timeout, which is both wrong and unhelpful: the session it
+# was preparing was not the session it was waiting on.
+TimeoutStartSec=90
+# journal+console, for the same reason as the compositor: when this script
+# fails there is no screen to read the error on.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=astrix-session
+
+[Install]
+WantedBy=basic.target

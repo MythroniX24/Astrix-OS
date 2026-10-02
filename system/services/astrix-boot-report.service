@@ -1,0 +1,32 @@
+[Unit]
+Description=Astrix OS boot report (graphical session diagnostics)
+Documentation=https://github.com/astrix-os/astrix
+# Runs after the session has had time to settle, so the report shows the state
+# the user would actually be looking at rather than a race against startup.
+After=astrix-session.service
+After=basic.target
+# Deliberately not Requires=astrix-session.service: a failing session is
+# exactly the case this report exists to explain, and a hard dependency would
+# suppress the report in the one situation it is needed.
+Wants=astrix-session.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The report is diagnostic output, so it goes to the console rather than only
+# to the journal. On a headless QEMU boot, and on a phone whose screen is
+# black because the shell failed, the serial console is the only place these
+# lines can be read from.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=astrix-boot-report
+# The session is still in flight when astrix-session.service returns, so a
+# report taken immediately shows the compositor as "activating" and the shell
+# as not yet started - i.e. it describes the race, not the outcome. Waiting
+# gives the session time to settle so the report reflects the state the user
+# is actually looking at.
+ExecStartPre=/bin/sleep 15
+ExecStart=/usr/lib/astrix/astrix-boot-report
+
+[Install]
+WantedBy=basic.target

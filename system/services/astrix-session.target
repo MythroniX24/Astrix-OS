@@ -1,0 +1,19 @@
+[Unit]
+Description=Astrix OS graphical session
+Documentation=https://github.com/astrix-os/astrix
+# The graphical target is what a phone boots into: a seat, a compositor and
+# the shell. There is no display manager and no window manager, because a
+# phone OS starts its own UI directly.
+Requires=astrix-compositor.service
+Wants=astrix-shell.service
+After=astrix-compositor.service
+Wants=systemd-logind.service
+After=seatd.service
+# DefaultDependencies and After are [Unit] directives. In [Install] systemd 257
+# reports them as unknown and drops them, which left this target still ordered
+# against basic.target by accident rather than by intent.
+DefaultDependencies=no
+After=basic.target
+
+[Install]
+WantedBy=graphical.target

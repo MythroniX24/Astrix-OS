@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Astrix OS - print a graphical session diagnostic report to the console.
+#
+# Started by astrix-boot-report.service. It exists because a phone gives you no
+# way to read an error when the screen is black: if the shell fails, the only
+# visible symptom is that there is no UI. The serial/UART console is the
+# fallback diagnostic channel, and this is what makes it useful.
+#
+# Everything printed here goes to stdout, which the unit points at the console.
+# The report is read-only: it inspects, it does not change the session.
+set -uo pipefail
+
+say() { printf 'astrix-boot-report: %s\n' "$*"; }
+
+say "=================== graphical session report ==================="
+
+say "--- units wanted by the session ---"
+systemctl list-units 'astrix-*' --no-pager --no-legend --all 2>/dev/null || say "(could not list units)"
+
+say "--- multi-user target state ---"
+systemctl is-active multi-user.target 2>/dev/null || true
+systemctl is-system-running 2>/dev/null || say "(is-system-running unavailable)"
+
+for unit in astrix-session.target astrix-session.service \
+            astrix-compositor.service astrix-shell.service; do
+	say "--- ${unit} ---"
+	systemctl show "$unit" -p ActiveState -p SubState -p Result -p ExecMainStatus \
+		--no-pager 2>/dev/null || say "(unit not found)"
+done
+
+say "--- compositor journal (last 40) ---"
+journalctl -u astrix-compositor.service -n 40 --no-pager 2>/dev/null \
+	|| say "(no journal available)"
+
+# A component that restarts every few seconds fills its own journal with
+# identical failures, which pushes the *first* error - the one that explains
+# all the others - out of any fixed-size window. Warnings and above from the
+# whole boot survive that, so this is the section that actually diagnoses.
+say "--- first errors on the whole boot ---"
+journalctl -p warning -b -n 30 --no-pager 2>/dev/null \
+	|| say "(no journal available)"
+
+say "--- shell journal (last 40) ---"
+journalctl -u astrix-shell.service -n 40 --no-pager 2>/dev/null \
+	|| say "(no journal available)"
+
+# -o cat drops the syslog metadata, and with it the kernel audit records the
+# kernel interleaves for every unit start/stop. The launcher's own log lines
+# are what is being read here, and they were previously pushed out of the
+# window entirely by audit spam.
+say "--- session launcher log ---"
+journalctl -u astrix-session.service -b -o cat --no-pager 2>/dev/null \
+	|| say "(no journal available)"
+
+say "--- display devices ---"
+ls -l /dev/dri 2>/dev/null || say "(no /dev/dri: no DRM device present)"
+say "--- input devices ---"
+ls -l /dev/input 2>/dev/null || say "(no /dev/input: no input devices present)"
+
+say "--- runtime dir / wayland socket ---"
+runtime="/run/user/$(id -u astrix 2>/dev/null || echo 1000)"
+say "expecting the session runtime dir at ${runtime}"
+ls -l "$runtime" 2>/dev/null || say "(${runtime} does not exist)"
+
+say "==============================================================="
+say "report complete"

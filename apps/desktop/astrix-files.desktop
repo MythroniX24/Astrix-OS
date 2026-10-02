@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Files
+GenericName=File Manager
+Comment=Browse and manage files on Astrix OS
+Exec=astrix-files
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileTools;FileManager;
+Keywords=files;folder;documents;

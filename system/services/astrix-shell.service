@@ -1,0 +1,74 @@
+[Unit]
+Description=Astrix Shell (mobile user interface)
+Documentation=https://github.com/astrix-os/astrix
+# The shell is a Wayland client: it cannot start before the compositor has
+# created its socket. astrix-compositor.service is Type=simple, so readiness is
+# detected by the socket appearing rather than by systemd ordering alone.
+After=astrix-compositor.service
+Requires=astrix-compositor.service
+PartOf=graphical-session.target
+# Give up after repeated rapid failures and surface it, instead of spinning
+# forever if the compositor is fundamentally broken. These are [Unit]
+# directives; in [Service] systemd drops them and the limit never applies.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=astrix
+Group=astrix
+# The shell is the session's first client. If it dies, the user is left with no
+# UI at all, so a restart is mandatory rather than optional.
+Restart=always
+RestartSec=1
+
+# A literal, for the same reason as in astrix-compositor.service: Environment=
+# in a system unit is expanded in the manager's context, so %U is 0 and the
+# shell would look for the compositor's socket in /run/user/0. build-rootfs.sh
+# asserts this matches ASTRIX_UID in config/os.conf.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Must match the name the compositor actually binds. The compositor takes this
+# from ASTRIX_SOCKET and defaults to astrix-0; a hardcoded wayland-N here would
+# break the moment anything else claimed that name, because wlroots picks the
+# first free number rather than a fixed one.
+Environment=WAYLAND_DISPLAY=astrix-0
+Environment=ASTRIX_WIDTH=720
+Environment=ASTRIX_HEIGHT=1600
+
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -S "$$XDG_RUNTIME_DIR/$$WAYLAND_DISPLAY" ] && [ $$i -lt 50 ]; do sleep 0.1; i=$$((i+1)); done; exit 0'
+ExecStart=/usr/bin/astrix-shell
+
+# See the note in astrix-compositor.service: the console has to carry these
+# messages, because a shell that fails to start leaves nothing visible.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=astrix-shell
+
+# The shell draws the UI; it needs no special capabilities at all.
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The shell reads the user's home (wallpaper, settings) and writes only its own
+# state directory.
+#
+# The path is written out rather than using %h: in ReadWritePaths, %h expands
+# against the *manager's* home (/root), not the service user's, so %h silently
+# points at a directory that does not exist and systemd fails the unit at
+# NAMESPACE setup with
+#   Failed to set up mount namespacing: /root/.local/share/astrix
+# before the shell's ExecStart is ever reached. The home directory is therefore
+# a literal, and build-rootfs.sh pins it to /home/astrix.
+ProtectHome=read-only
+ReadWritePaths=/home/astrix/.local/share/astrix
+StateDirectory=astrix
+PrivateTmp=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# The shell talks to system services over D-Bus (power, network) which is why
+# it is not fully sandboxed from the session bus.
+PrivateDevices=yes
+
+[Install]
+WantedBy=graphical-session.target

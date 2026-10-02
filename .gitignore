@@ -1,0 +1,24 @@
+# Build output. The build tree is ~10 GB (rootfs, disk images, QEMU logs,
+# rendered screenshots) and none of it belongs in the repository: every byte of
+# it is reproduced by ./build.sh from the sources and config/ that ARE tracked.
+build/
+
+# Generated Wayland bindings. protocol/*.xml is the source of truth; these are
+# produced by wayland-scanner during the build, and the exact bytes depend on
+# the scanner version (see protocol/README.md - that matters here).
+protocol/*-protocol.c
+protocol/*-protocol.h
+protocol/*-client-header.h
+pg/
+
+# Editor and OS noise.
+*.o
+*.swp
+*~
+.DS_Store
+
+# Local scratch
+/tmp/
+*.log
+__pycache__/
+*.pyc

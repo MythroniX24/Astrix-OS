@@ -1,0 +1,100 @@
+[Unit]
+Description=Astrix OS compositor (Wayland display server)
+Documentation=https://github.com/astrix-os/astrix
+# The compositor is the graphical session: it must not start before seatd has
+# created the "seat0" logind seat, or there is no input device to attach to.
+After=systemd-user-sessions.service seatd.service getty.target
+Wants=systemd-user-sessions.service
+Requires=seatd.service
+PartOf=graphical-session.target
+Before=astrix-shell.service
+
+[Service]
+Type=simple
+User=astrix
+Group=astrix
+# The compositor owns the GPU/DRM master for this seat. That is the one
+# privileged capability it genuinely needs, so it is the only one granted.
+DeviceAllow=/dev/dri/renderD128 rw
+DeviceAllow=/dev/dri/card0 rw
+DeviceAllow=/dev/input/event* rw
+SupplementaryGroups=input render video seat audio
+# RTKit gives us real-time scheduling priority without running as root.
+AmbientCapabilities=CAP_SYS_NICE
+NoNewPrivileges=yes
+# The compositor is the session; if it dies, the session must restart cleanly
+# rather than leaving a blank screen with no way back.
+Restart=on-failure
+RestartSec=2
+
+# XDG_RUNTIME_DIR is a literal, not %U.
+#
+# In a system unit, Environment= specifiers are expanded in the *manager's*
+# context, so %U is 0 - the manager's uid - not the service user's 1000. The
+# compositor therefore tried to create its Wayland socket in /run/user/0,
+# which it cannot write to, and failed with
+#   unable to open lockfile /run/user/0/astrix-0.lock check permissions
+# This is the same trap as %h in ReadWritePaths, in astrix-shell.service: the
+# specifier looks right and silently means something else.
+#
+# build-rootfs.sh asserts that this literal matches ASTRIX_UID from
+# config/os.conf, so the two cannot drift apart silently.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Must match the compositor's actual bind name (ASTRIX_SOCKET, default
+# astrix-0). Leaving a stale wayland-N here makes the value disagree with
+# reality for anyone reading the unit to debug a session.
+Environment=WAYLAND_DISPLAY=astrix-0
+Environment=ASTRIX_WIDTH=720
+Environment=ASTRIX_HEIGHT=1600
+Environment=ASTRIX_REFRESH_HZ=60
+# On a device with a working GPU driver this is unset, and wlroots picks GLES2.
+# Software rendering is the QEMU/older-hardware fallback.
+Environment=WLR_RENDERER=pixman
+# Raise ASTRIX_LOG_LEVEL (0-3) to debug the session.
+Environment=ASTRIX_LOG_LEVEL=2
+
+ExecStart=/usr/bin/astrix-compositor
+# journal+console, not journal alone. On a phone there is no display to read
+# an error on, and when the shell fails to start the screen is black - so the
+# serial/UART console has to carry these messages or a session failure is
+# completely silent. It costs one tty and it is the only diagnostic channel
+# that works when the GPU stack is exactly what is broken.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=astrix-compositor
+
+# Hardening. The compositor must not be able to write system files.
+ProtectSystem=strict
+# ProtectHome=yes hides /home, /root AND /run/user behind empty read-only
+# mounts. Hiding /run/user is fatal here: the compositor's own Wayland socket
+# lives in XDG_RUNTIME_DIR=/run/user/1000, so it sees an empty directory and
+# every start ends with
+#   unable to open lockfile /run/user/1000/astrix-0.lock check permissions
+#   [ERROR] [astrix] failed to create wayland socket 'astrix-0'
+# *after* the DRM backend has already come up perfectly - which is why this
+# looked like a GPU problem for a long time. ProtectHome=read-only keeps the
+# directories visible but immutable, which is all the compositor needs: it
+# reads nothing from /home and writes only its socket.
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=no
+# ProtectSystem=strict remounts / read-only, /run included, so the socket
+# directory is re-opened for writing here. This cannot substitute for
+# ProtectHome=read-only - a hidden directory has no ReadWritePaths target.
+# Written as a literal for the same reason XDG_RUNTIME_DIR above is (no %U in
+# a system unit); build-rootfs.sh asserts it matches ASTRIX_UID in
+# config/os.conf.
+ReadWritePaths=/run/user/1000
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=no
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=CAP_SYS_NICE CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=graphical-session.target

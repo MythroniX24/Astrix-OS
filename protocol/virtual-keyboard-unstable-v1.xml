@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="virtual_keyboard_unstable_v1">
+  <copyright>
+    Copyright © 2018 Simon Ser
+
+    Permission to use, copy, modify, distribute, and sell this software and its
+    documentation for any purpose is hereby granted without fee, provided that
+    the above copyright notice appear in all copies and that both that copyright
+    notice and this permission notice appear in supporting documentation, and
+    that the name of the copyright holders not be used in advertising or
+    publicity pertaining to distribution of the software without specific,
+    written prior permission.  The copyright holders make no representations
+    about the suitability of this software for any purpose.  It is provided "as
+    is" without express or implied warranty.
+
+    THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+    INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO EVENT
+    SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+    CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+    DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+    TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+    OF THIS SOFTWARE.
+  </copyright>
+
+  <description summary="virtual keyboard interface">
+    This protocol allows clients to create a virtual keyboard.
+
+    The virtual keyboard is similar to a regular keyboard. However, the
+    client creating the keyboard does not receive the key events. Instead, the
+    compositor will send them to the currently focused client.
+
+    The virtual keyboard can be used to implement alternative input methods
+    such as on-screen keyboards.
+
+    Warning! The protocol described in this file is experimental and backward
+    incompatible changes may be made. Backward compatible changes may be added
+    together with the corresponding interface version bump. Backward
+    incompatible changes can only be done by creating a new major version of
+    the extension.
+  </description>
+
+  <interface name="zwp_virtual_keyboard_manager_v1" version="1">
+    <description summary="virtual keyboard manager">
+      A virtual keyboard manager is used to create virtual keyboards.
+    </description>
+
+    <request name="create_virtual_keyboard">
+      <description summary="create a new virtual keyboard">
+        This request creates a new virtual keyboard object.
+      </description>
+      <arg name="seat" type="object" interface="wl_seat"/>
+      <arg name="id" type="new_id" interface="zwp_virtual_keyboard_v1"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the virtual keyboard manager">
+        This request indicates that the client will no longer use the
+        manager.
+      </description>
+    </request>
+  </interface>
+
+  <interface name="zwp_virtual_keyboard_v1" version="1">
+    <description summary="virtual keyboard">
+      The virtual keyboard is an object that will be sent to the focused
+      client instead of the real keyboard.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_keymap" value="1" summary="invalid keymap"/>
+    </enum>
+
+    <request name="keymap">
+      <description summary="set the virtual keyboard's keymap">
+        Sets the keymap for the virtual keyboard. This request is sent right
+        after the virtual keyboard is created and has to be sent again if the
+        keymap changes.
+      </description>
+      <arg name="format" type="uint" enum="keymap_format"/>
+      <arg name="fd" type="fd"/>
+      <arg name="size" type="uint"/>
+    </request>
+
+    <request name="key">
+      <description summary="send key event from virtual keyboard">
+        Sends a key event from the virtual keyboard to the focused client.
+      </description>
+      <arg name="time" type="uint" summary="event timestamp in milliseconds"/>
+      <arg name="key" type="uint" summary="keycode"/>
+      <arg name="state" type="uint" enum="wl_keyboard.key_state"/>
+    </request>
+
+    <request name="modifiers">
+      <description summary="send modifiers from virtual keyboard">
+        Sends the current modifiers state to the focused client.
+      </description>
+      <arg name="mods_depressed" type="uint"
+        summary="depressed modifiers"/>
+      <arg name="mods_latched" type="uint"
+        summary="latched modifiers"/>
+      <arg name="mods_locked" type="uint"
+        summary="locked modifiers"/>
+      <arg name="group" type="uint"
+        summary="keyboard layout"/>
+    </request>
+
+    <enum name="keymap_format" bitfield="true">
+      <entry name="no_keymap" value="1" summary="no keymap; client will
+        decide what keys do"/>
+      <entry name="xkb_v1" value="2" summary="xkb-v1"/>
+      <entry name="text_v1" value="4" summary="text (deprecated)"/>
+    </enum>
+  </interface>
+</protocol>

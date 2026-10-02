@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=App Store
+GenericName=Software Manager
+Comment=Install software from the Astrix repositories
+Exec=astrix-package-manager
+Icon=system-software-install
+Terminal=false
+Categories=System;PackageManager;
+Keywords=install;software;packages;store;

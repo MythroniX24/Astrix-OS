@@ -1,0 +1,115 @@
+# Astrix OS - core package set for the minimal Debian userspace.
+#
+# Rules:
+#  - No desktop environment (no task-*-desktop, no GNOME/KDE/XFCE/MATE).
+#  - Everything here must be justifiable for a phone: boot, graphics, input,
+#    audio, networking, power, and the core userland.
+#  - The Wayland session must work with nothing else started.
+#
+# Developer tooling lives in config/packages-dev.txt so that the shipping
+# image stays small; a "full" build installs both.
+
+# --- init / base system -----------------------------------------------------
+systemd-sysv
+udev
+dbus
+libc-bin
+locales
+initramfs-tools
+
+# --- kernel -----------------------------------------------------------------
+# Boot kernel for the QEMU milestone. Replaced by the in-tree Astrix kernel
+# (config/kernel) once that build is available.
+linux-image-arm64
+
+# --- graphics / display stack ----------------------------------------------
+# wlroots is the compositor library. No GNOME/KDE/XFCE anywhere.
+libwlroots-0.18
+wayland-protocols
+libwayland-server0
+libwayland-client0
+libegl1
+libgles2
+libgbm1
+libdrm2
+libpixman-1-0
+libdisplay-info2
+libliftoff0
+liblcms2-2
+xkb-data
+# seatd provides the session/graphics seat without a display manager.
+seatd
+# Mesa: software rendering for QEMU, kms driver path for real panels.
+libgl1-mesa-dri
+mesa-vulkan-drivers
+
+# --- input ------------------------------------------------------------------
+libinput10
+libxkbcommon0
+
+# --- fonts ------------------------------------------------------------------
+fonts-dejavu-core
+
+# --- networking -------------------------------------------------------------
+systemd-resolved
+network-manager
+iwd
+ca-certificates
+iproute2
+iputils-ping
+
+# --- audio ------------------------------------------------------------------
+pipewire
+wireplumber
+pulseaudio-utils
+
+# --- bluetooth --------------------------------------------------------------
+bluez
+
+# --- power / hardware -------------------------------------------------------
+upower
+tlp
+usbutils
+pciutils
+lm-sensors
+
+# --- storage / filesystem ---------------------------------------------------
+e2fsprogs
+dosfstools
+util-linux
+fuse3
+udisks2
+
+# --- shell / core userland --------------------------------------------------
+bash
+coreutils
+findutils
+grep
+sed
+gawk
+less
+nano
+tmux
+procps
+psmisc
+file
+tree
+jq
+ca-certificates
+
+# --- security ---------------------------------------------------------------
+polkitd
+libpam-systemd
+apparmor
+apparmor-utils
+sudo
+gnupg
+# Verifies repository Release signatures beyond the apt keyring.
+debsig-verify
+apt-transport-https
+
+# --- session plumbing -------------------------------------------------------
+accountsservice
+rtkit
+# logind/seat management ships inside the systemd package on Debian; the
+# systemd-sysv above already provides /sbin/init and the session bits.

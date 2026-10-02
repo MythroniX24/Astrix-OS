@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=System Info
+GenericName=System Information
+Comment=CPU, memory, storage and battery status
+Exec=astrix-sysinfo
+Icon=drive-harddisk
+Terminal=false
+Categories=System;Monitor;
+Keywords=cpu;memory;ram;disk;battery;system;

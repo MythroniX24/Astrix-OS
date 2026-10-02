@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Android Apps
+GenericName=Android Compatibility
+Comment=Browse Android apps available to Astrix OS
+Exec=astrix-apk-manager
+Icon=android
+Terminal=false
+Categories=System;PackageManager;Android;
+Keywords=android;apk;waydroid;compatibility;

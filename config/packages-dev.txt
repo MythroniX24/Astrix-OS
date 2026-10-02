@@ -1,0 +1,81 @@
+# Astrix OS - optional developer tooling.
+#
+# Not installed in the default (shipping) image. `./build.sh --full` installs
+# this on top of config/packages.txt.
+#
+# This is the point of choosing Debian as the base: glibc, apt and the Debian
+# archive mean the normal Linux toolchain works with no emulation layer.
+
+# --- VCS / transfer ---------------------------------------------------------
+git
+gh
+openssh-client
+curl
+wget
+
+# --- Python -----------------------------------------------------------------
+python3
+python3-pip
+python3-venv
+
+# --- Node.js ----------------------------------------------------------------
+nodejs
+npm
+
+# --- Rust / Go --------------------------------------------------------------
+rustc
+cargo
+golang-go
+
+# --- C / C++ ---------------------------------------------------------------
+gcc
+g++
+make
+cmake
+ninja-build
+pkg-config
+build-essential
+clang
+llvm
+
+# --- debugging / inspection -------------------------------------------------
+gdb
+strace
+ltrace
+valgrind
+lsof
+htop
+man-db
+manpages
+ripgrep
+fd-find
+shellcheck
+
+# --- data / misc ------------------------------------------------------------
+sqlite3
+wget
+net-tools
+bind9-dnsutils
+socat
+openssh-server
+tmux
+htop
+
+# --- other runtimes ---------------------------------------------------------
+default-jdk-headless
+
+# --- build of Astrix itself (for in-target development) ---------------------
+meson
+ninja-build
+libwlroots-0.18-dev
+libwayland-dev
+libdrm-dev
+libgbm-dev
+libinput-dev
+libudev-dev
+libseat-dev
+libpixman-1-dev
+libfreetype-dev
+build-essential
+pkg-config
+git

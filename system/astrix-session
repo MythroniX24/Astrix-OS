@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+# Astrix OS - graphical session launcher.
+#
+# Started by astrix-session.service. Logs the autologin user in, then starts
+# the graphical session (seat + compositor + shell) as that user.
+#
+# The compositor and shell are deliberately *user* services running in a
+# systemd --user instance for the session user, not system services: a phone
+# session is the user's, and anything running outside it should be a system
+# daemon that the user cannot influence.
+set -euo pipefail
+
+ASTRIX_USER="${ASTRIX_USER:-astrix}"
+ACTION="${1:-start}"
+
+# Every logind/D-Bus call is bounded.
+#
+# loginctl talks to systemd-logind over the system bus and blocks until it
+# answers. While the compositor is crash-looping, logind is busy servicing
+# seatd/libseat on every restart, and a call that would normally take
+# milliseconds can sit there until the unit's TimeoutStartSec kills the whole
+# launcher - which is what happened: astrix-session.service died on a timeout
+# having printed not one line, so the report had nothing at all to work with.
+#
+# An auto-login launcher must never be able to hang on a daemon it does not
+# own. Every such call goes through this wrapper, and a timeout is reported and
+# treated as "not available" rather than being allowed to stop the boot.
+LOGINCTL_TIMEOUT="${ASTRIX_LOGINCTL_TIMEOUT:-3}"
+
+log() { printf 'astrix-session: %s\n' "$*" >&2; }
+die() { printf 'astrix-session: error: %s\n' "$*" >&2; exit 1; }
+
+# loginctl, but never for longer than LOGINCTL_TIMEOUT.
+loginctl_bounded() {
+	timeout "$LOGINCTL_TIMEOUT" loginctl "$@"
+}
+
+get_uid() { id -u "$ASTRIX_USER" 2>/dev/null || echo ""; }
+
+wait_for_user_bus() {
+	# The user systemd instance and its bus socket must exist before we can
+	# start anything in it.
+	local uid="$1" runtime="/run/user/$1"
+	local i=0
+	while [ ! -S "$runtime/systemd/private" ] && [ "$i" -lt 100 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	if [ ! -S "$runtime/systemd/private" ]; then
+		log "warning: user bus for uid $uid did not appear; the session may not start"
+	fi
+}
+
+# What the graphical session needs from the system, printed to the console.
+#
+# This exists because every one of these has been an actual failure at least
+# once, and in each case the symptom seen from the outside was identical: a
+# black screen. A launcher that logs what it found turns "the compositor does
+# not work" into "seatd is not running", which is a five-minute fix instead of
+# a long one.
+diagnose() {
+	local uid="$1"
+	log "--- session preflight ---"
+	log "user: $ASTRIX_USER (uid $uid)"
+
+	if command -v systemctl >/dev/null 2>&1; then
+		log "seatd:   $(systemctl is-active seatd.service 2>/dev/null || echo unknown)"
+		log "logind:  $(systemctl is-active systemd-logind.service 2>/dev/null || echo unknown)"
+	fi
+	log "dbus:    $([ -S /run/dbus/system_bus_socket ] && echo present || echo MISSING)"
+	# XDG_SESSION_ID is what decides whether wlroots can reach the GPU at
+	# all, so it is printed explicitly rather than left to be inferred from
+	# a DRM error several lines later.
+	log "session: ${XDG_SESSION_ID:-(unset - the compositor will not get DRM access)}"
+	log "sessions for $ASTRIX_USER: $(loginctl_bounded list-sessions --no-legend 2>/dev/null |
+		awk -v u="$ASTRIX_USER" '$3 == u { printf "%s(%s) ", $1, $4 }')"
+
+	# The DRM nodes, and whether the session user can actually open them.
+	# "present but not openable" is the interesting case: it means groups or
+	# the device cgroup, not a missing driver.
+	local node
+	for node in /dev/dri/card0 /dev/dri/renderD128; do
+		if [ ! -e "$node" ]; then
+			log "$node: MISSING"
+			continue
+		fi
+		if setpriv --reuid="$uid" --regid="$uid" --init-groups \
+			head -c 0 < "$node" 2>/dev/null; then
+			log "$node: present, readable by $ASTRIX_USER"
+		else
+			log "$node: present, NOT accessible to $ASTRIX_USER (groups/device cgroup)"
+		fi
+	done
+	log "groups:  $(setpriv --reuid="$uid" --regid="$uid" --init-groups id -Gn 2>/dev/null || echo unknown)"
+	log "--- end preflight ---"
+}
+
+# Wait, bounded, for the GPU's device node before the compositor is started.
+#
+# The compositor is useless without a KMS device, and starting it before the
+# node exists is worse than useless: on one boot the session began at 399s,
+# virtio_gpu finished initialising at 428s, and the compositor dereferenced a
+# NULL device list and died with SIGSEGV (see the `n <= 0` check in
+# gui/compositor/src/main.c). Restarting did not help either - the retry came
+# up while the device was still being initialised and then failed to create an
+# allocator, so the session died completely instead of coming up late.
+#
+# A phone always has a GPU, but a developer VM or a headless CI runner may not,
+# so this is bounded and it reports a timeout rather than refusing to start.
+wait_for_gpu() {
+	local waited=0 limit="${ASTRIX_GPU_WAIT:-20}"
+	while [ ! -e /dev/dri/card0 ]; do
+		if [ "$waited" -ge "$limit" ]; then
+			log "warn: /dev/dri/card0 still absent after ${limit}s; starting anyway"
+			log "warn: the compositor will fall back and there will be no display"
+			return 0
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	[ "$waited" -gt 0 ] && log "GPU device node appeared after ${waited}s"
+	return 0
+}
+
+# Create (or reuse) the logind session that owns the graphical session, and
+# return its id.
+#
+# This is not bookkeeping, it is a hard requirement. wlroots 0.18 will not open
+# a DRM device without a wlr_session, and wlr_session is a libseat session,
+# and libseat only hands out a seat's devices to the caller that owns a logind
+# session on that seat. astrix-compositor.service runs as User=astrix with
+# XDG_SESSION_ID unset, so libseat had nothing to attach to and the compositor
+# failed with "no backend available" even though /dev/dri/card0 was present and
+# openable - the device was there, the compositor was asking the wrong system
+# for access to it.
+#
+# On a desktop this session is created by a display manager or a login. Astrix
+# has neither: a phone goes straight to the home screen, so the session has to
+# be created here, and the compositor told about it.
+create_logind_session() {
+	local uid="$1" sid=""
+
+	# Reuse an existing session for this user rather than stacking a new one
+	# on every boot; a leftover session pointing at a dead compositor is how
+	# "the session is already active" failures happen.
+	#
+	# The `|| sid=""` is load-bearing. A bare `sid="$(...)"` takes the exit
+	# status of the command substitution, and with `set -e` a single failed
+	# `loginctl` - which happens routinely on a first boot - kills the whole
+	# launcher before it prints a word. That is exactly what happened: the
+	# unit failed with no output at all and nothing to diagnose.
+	sid="$(loginctl_bounded list-sessions --no-legend 2>/dev/null |
+		awk -v u="$ASTRIX_USER" '$3 == u { print $1; exit }')" || sid=""
+
+	if [ -z "$sid" ]; then
+		# loginctl attach creates a session without running anything in it,
+		# which is what is wanted: the compositor and shell are separate
+		# units that need a session to belong to, not a command to wait for.
+		# seat-launch would create a transient session that dies with its
+		# command, taking the compositor's access with it.
+		sid="$(loginctl_bounded attach seat0 astrix-gui "$ASTRIX_USER" \
+			astrix tty x11 "" none 2>/dev/null | tr -d '[:space:]')" || sid=""
+	fi
+
+	if [ -n "$sid" ]; then
+		log "logind session: $sid ($(loginctl_bounded show-session "$sid" -p Type --value 2>/dev/null || echo '?'))"
+	else
+		log "warning: no logind session could be created; the compositor may not get DRM access"
+	fi
+	printf '%s' "$sid"
+}
+
+# Hand the session id to the compositor.
+#
+# systemd has no directive for "this unit is part of that logind session" in
+# system scope, and moving the compositor to a user unit to get one is a much
+# larger change than the problem needs. A runtime drop-in is the standard way
+# to add a single Environment= to one running unit, and /run is the right
+# place for it: it is rebuilt on every boot, so the session id can never go
+# stale in an image.
+export_session_id() {
+	local sid="$1"
+	[ -n "$sid" ] || return 0
+	local dropin="/run/systemd/system/astrix-compositor.service.d/10-logind-session.conf"
+	mkdir -p "$(dirname "$dropin")" || return 0
+	cat > "$dropin" <<EOF
+# Written by astrix-session at boot. Not part of the image: see
+# system/astrix-session for why the compositor needs XDG_SESSION_ID.
+[Service]
+Environment=XDG_SESSION_ID=${sid}
+EOF
+	# A failure to reload is not fatal: the compositor will start without the
+	# session id and say so, which is a readable error, whereas killing the
+	# launcher here would leave nothing running and no explanation.
+	systemctl daemon-reload || log "warning: daemon-reload failed; the compositor may not pick up XDG_SESSION_ID"
+	log "compositor drop-in written: $dropin"
+}
+
+case "$ACTION" in
+start)
+	uid="$(get_uid)"
+	[ -n "$uid" ] || die "user '$ASTRIX_USER' does not exist"
+
+	# The session's runtime directory must exist before anything in it.
+	#
+	# Both the compositor and the shell are started with
+	# XDG_RUNTIME_DIR=/run/user/<uid>, and the compositor creates its Wayland
+	# socket there. On a normal system systemd-logind creates that directory
+	# when the user logs in; with no real login on a headless boot it simply
+	# never appears, the compositor cannot create its socket, and the session
+	# fails with no useful message. Creating it here makes the session
+	# self-contained instead of depending on a login that this OS does not have.
+	#
+	# This is the *first* thing the launcher does, ahead of every logind call,
+	# and it is the only part of the preparation the session cannot start
+	# without. The D-Bus work below can each burn a few seconds against an
+	# unresponsive logind; doing it first is what made the compositor lose a
+	# race it was never supposed to be in.
+	#
+	# user-runtime-dir@<uid>.service is the canonical unit for this, so it is
+	# preferred; install -d is the fallback for when it is not available.
+	runtime_dir="/run/user/$uid"
+	if ! systemctl start "user-runtime-dir@${uid}.service" 2>/dev/null; then
+		log "note: user-runtime-dir@${uid}.service unavailable; creating $runtime_dir directly"
+		install -d -m 0700 -o "$uid" -g "$uid" "$runtime_dir" || \
+			die "cannot create $runtime_dir; the graphical session has nowhere to put its socket"
+	fi
+	if [ ! -d "$runtime_dir" ]; then
+		die "session runtime dir $runtime_dir is missing after setup"
+	fi
+	log "session runtime dir ready: $runtime_dir"
+
+	if [ -e "/run/systemd/system" ] && command -v systemctl >/dev/null 2>&1; then
+		# Ask logind to create the session, which starts the user manager.
+		if ! loginctl_bounded enable-linger "$ASTRIX_USER" 2>/dev/null; then
+			log "note: could not enable linger for $ASTRIX_USER (fine on QEMU)"
+		fi
+		# A seat named "seat0" on a VT gives a normal graphical session.
+		loginctl_bounded enable-seat seat0 2>/dev/null || true
+
+		session_id="$(create_logind_session "$uid")" || session_id=""
+		export_session_id "$session_id"
+		# Also set it here so the preflight below reports the value the
+		# compositor will actually run with, rather than "(unset)" and
+		# sending us looking in the wrong place.
+		if [ -n "$session_id" ]; then
+			XDG_SESSION_ID="$session_id"
+			export XDG_SESSION_ID
+		fi
+	fi
+
+	diagnose "$uid"
+
+	wait_for_user_bus "$uid"
+
+	# Start the graphical session.
+	#
+	# In the *system* manager, deliberately. An earlier version used
+	# `systemd-run --user --unit=astrix-session.target`, which started a
+	# second, user-scope unit with the *same name* as the system target that
+	# astrix-session.service already pulls in. The two fought over the same
+	# compositor: each stopped the other's units, and the session thrashed
+	# until astrix-session.service hit its timeout and systemd tore it all
+	# down. The compositor and shell units run as system units with User=astrix,
+	# so system scope is both sufficient and unambiguous.
+	#
+	# --no-block for the same reason. A target's Wants are waited on by
+	# `systemctl start`, and astrix-session.target Wants=astrix-shell.service,
+	# which Restart=always. Waiting for a job that is designed never to
+	# complete means the launcher sits there until TimeoutStartSec kills it,
+	# and the session is torn down with a misleading "timeout" on a session
+	# that is actually running. Requesting the start and returning is what
+	# a oneshot launcher is for; the units report their own failures.
+	# Nothing downstream can work until the GPU node exists, so wait here
+	# rather than letting the compositor crash-loop against a missing device.
+	wait_for_gpu
+
+	log "starting astrix-session.target"
+	systemctl start --no-block astrix-session.target || \
+		log "error: could not request astrix-session.target (see 'journalctl -u astrix-compositor')"
+
+	# The seat device must be reachable by the user for input and GPU.
+	if [ -e /dev/dri ]; then
+		chgrp -f render /dev/dri/* 2>/dev/null || true
+	fi
+	log "session start requested for $ASTRIX_USER"
+	;;
+
+stop)
+	uid="$(get_uid)"
+	if [ -n "$uid" ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl stop astrix-session.target 2>/dev/null || true
+		loginctl_bounded terminate-user "$ASTRIX_USER" 2>/dev/null || true
+	fi
+	log "session stopped"
+	;;
+
+status)
+	uid="$(get_uid)"
+	if [ -n "$uid" ]; then
+		systemctl status astrix-session.target astrix-compositor.service \
+			astrix-shell.service --no-pager 2>/dev/null || true
+	fi
+	;;
+
+*)
+	die "unknown action '$ACTION' (expected start|stop|status)"
+	;;
+esac
