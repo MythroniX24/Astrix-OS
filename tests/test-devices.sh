@@ -214,6 +214,19 @@ else
   else
     warn "the refusal does not explain itself"
   fi
+  # Clear the directory first. The property under test is "build-device.sh
+  # writes nothing", not "this path has never existed on this machine" -
+  # scripts/port-<device>.sh android-host pack legitimately writes a different
+  # bundle to the same place, and a developer who ran that first used to fail
+  # this check for doing the right thing.
+  rm -rf "build/device/${UNSUPPORTED}"
+  out="$(bash scripts/build-device.sh "${UNSUPPORTED}" 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    err "build-device.sh ${UNSUPPORTED} exited 0 on a second run"
+    FAILED=$((FAILED + 1))
+  else
+    pass "it refuses consistently, not just the first time"
+  fi
   if [ -d "build/device/${UNSUPPORTED}" ]; then
     err "it left a bundle behind at build/device/${UNSUPPORTED}"
     FAILED=$((FAILED + 1))
@@ -224,19 +237,26 @@ fi
 
 # ---------------------------------------------------------------------------
 printf '\n'
-banner_msg="the per-device port tool exists, and its gates hold"
+banner_msg="every device profile has a port tool, and its gates hold"
 printf '  %s\n' "$banner_msg"
 # A device that has a profile but no way to make progress is a dead end with
 # documentation. The port script is the other half of the promise: it must
-# exist, it must explain the two routes, and it must refuse to flash without
-# the same explicit override everything else uses.
-PORT="scripts/port-redmi-8a.sh"
-if [ ! -x "$PORT" ]; then
-  err "no executable ${PORT}"
-  dim "  docs/REDMI-8A.md points readers at it; it has to exist"
-  FAILED=$((FAILED + 1))
-else
-  pass "${PORT} exists and is executable"
+# exist, it must explain the routes, and it must refuse to flash without the
+# same explicit override everything else uses. Loop over every device, so a
+# new profile cannot arrive without one.
+for p in "${PROFILES[@]}"; do
+  dev="$(basename "$p" .conf)"
+  PORT="scripts/port-${dev}.sh"
+  printf '\n'
+  printf '  %s\n' "${PORT}"
+
+  if [ ! -x "$PORT" ]; then
+    err "no executable ${PORT}"
+    dim "  the device docs point readers at it; it has to exist"
+    FAILED=$((FAILED + 1))
+    continue
+  fi
+  pass "exists and is executable"
 
   if bash -n "$PORT" 2>/dev/null; then
     pass "it parses"
@@ -252,10 +272,10 @@ else
   else
     pass "'status' runs and reports"
   fi
-  # The whole point of the script is that it names the two routes and is
-  # explicit about what each one proves. Copy that loses and the page becomes
-  # another promise nobody checked.
-  for want in "android-host" "boot-test" "Adreno 505"; do
+  # The whole point of the script is that it names the routes and is explicit
+  # about what each one proves. Copy that loses and the page becomes another
+  # promise nobody checked.
+  for want in "android-host" "boot-test"; do
     if printf '%s' "$out" | grep -q "$want"; then
       pass "status mentions '${want}'"
     else
@@ -263,6 +283,13 @@ else
       FAILED=$((FAILED + 1))
     fi
   done
+  gpu="$( ( source "$p"; printf '%s' "${DEVICE_GPU}" ) )"
+  if printf '%s' "$out" | grep -qF "$gpu"; then
+    pass "status names the GPU (${gpu})"
+  else
+    err "status does not name the GPU; a reader cannot tell why the screen stays dark"
+    FAILED=$((FAILED + 1))
+  fi
   if printf '%s' "$out" | grep -qi "does not prove"; then
     pass "status says what the routes do NOT prove"
   else
@@ -330,34 +357,42 @@ else
       warn "the build failure does not name the missing input"
     fi
   fi
-fi
+done
 
 # ---------------------------------------------------------------------------
 printf '\n'
-banner_msg="the redmi-8a profile records the routes it can actually offer"
+banner_msg="each profile records the routes it can actually offer"
 printf '  %s\n' "$banner_msg"
-(
-  # shellcheck source=/dev/null
-  source "config/devices/redmi-8a.conf"
-  missing=""
-  for k in DEVICE_TEST_ROUTES DEVICE_ANDROID_HOST_SUPPORTED DEVICE_BOOT_TEST_SUPPORTED \
-           DEVICE_GUI_PORT_STEPS DEVICE_BOOT_TEST_STEPS DEVICE_BOOT_TEST_CONSOLE \
-           DEVICE_BOOT_TEST_EXPECTS_DISPLAY DEVICE_BOOT_TEST_REFLOWS_ANDROID; do
-    [ -n "${!k:-}" ] || missing="${missing} ${k}"
-  done
-  [ -z "$missing" ] || { err "missing:${missing}"; exit 1; }
-  # "unsupported" and "you can still run the GUI today" have to coexist in one
-  # file without either one quietly overwriting the other.
-  [ "${DEVICE_BOOT_STATUS}" = "unsupported" ] || {
-    err "an unported device must not claim supported"; exit 1; }
-  [ "${DEVICE_VERIFIED_BOOT}" = "no" ] || {
-    err "an unbooted device must not claim a verified boot"; exit 1; }
-  # The display expectation is the field most likely to be quietly wrong, and
-  # it is the one that decides whether the user looks at the right screen.
-  [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
-    err "a boot test on an Adreno 505 phone cannot expect a display"; exit 1; }
-  exit 0
-) 2>&1 | sed 's/^/      /' && pass "the profile is honest about both routes" || FAILED=$((FAILED + 1))
+for p in "${PROFILES[@]}"; do
+  dev="$(basename "$p" .conf)"
+  (
+    # shellcheck source=/dev/null
+    source "$p"
+    missing=""
+    for k in DEVICE_TEST_ROUTES DEVICE_ANDROID_HOST_SUPPORTED DEVICE_BOOT_TEST_SUPPORTED \
+             DEVICE_GUI_PORT_STEPS DEVICE_BOOT_TEST_STEPS DEVICE_BOOT_TEST_CONSOLE \
+             DEVICE_BOOT_TEST_EXPECTS_DISPLAY DEVICE_BOOT_TEST_REFLOWS_ANDROID \
+             DEVICE_BOOT_TEST_DARK_REASON DEVICE_BOOT_TEST_CMDLINE; do
+      [ -n "${!k:-}" ] || missing="${missing} ${k}"
+    done
+    [ -z "$missing" ] || { err "missing:${missing}"; exit 1; }
+    # "unsupported" and "you can still run the GUI today" have to coexist in
+    # one file without either one quietly overwriting the other.
+    [ "${DEVICE_BOOT_STATUS}" = "unsupported" ] || {
+      err "an unported device must not claim supported"; exit 1; }
+    [ "${DEVICE_VERIFIED_BOOT}" = "no" ] || {
+      err "an unbooted device must not claim a verified boot"; exit 1; }
+    # The display expectation is the field most likely to be quietly wrong,
+    # and it is the one that decides whether the user stares at a black
+    # screen waiting for something that was never going to appear.
+    [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
+      err "an unported display path cannot expect a display"; exit 1; }
+    exit 0
+  ) > /tmp/astrix-profile-check.$$ 2>&1 && \
+    pass "${dev}: the profile is honest about its routes" || \
+    { sed 's/^/      /' /tmp/astrix-profile-check.$$; FAILED=$((FAILED + 1)); }
+  rm -f /tmp/astrix-profile-check.$$
+done
 
 printf '\n'
 if [ "$FAILED" -ne 0 ]; then

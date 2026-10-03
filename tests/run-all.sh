@@ -333,6 +333,21 @@ fi
 # link at all. That is arithmetic, it can be checked on the host in seconds,
 # and it is easy to write a tool that always says yes. So the budget is pinned
 # here including the case where it has to refuse a panel.
+# 12. Every device profile's panel, checked with no phone attached.
+#
+# Neither target phone has ever been booted - Adreno 505 and MT6855's display
+# pipeline both have no mainline driver - so "does the UI work on the moto g64
+# 5G?" has no answer that involves the phone. The geometry does. This runs the
+# shell at each profile's real panel size and asserts the dock, the keyboard and
+# the status bar fit and accept taps, reading the geometry from the profiles so
+# it cannot drift from the hardware.
+banner "device panel geometry (no phone)"
+if bash tests/test-device-panels.sh 2>&1 | sed 's/^/      /'; then
+  record "test-device-panels ($(ls build/tests/device-panels-*.out 2>/dev/null | wc -l) panel(s))" 0
+else
+  record "test-device-panels" 1
+fi
+
 banner "display link budget (moto g64 5G, Redmi 8A)"
 if bash tests/test-display-budget.sh 2>&1 | sed 's/^/      /'; then
   record "test-display-budget" 0

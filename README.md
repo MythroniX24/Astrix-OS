@@ -92,6 +92,8 @@ device tree.
 ./scripts/panel-check.sh              # the 7 display stages of the *running* kernel
 ./scripts/flash-device.sh redmi-8a --flash   # refuses, and explains why
 ./scripts/port-redmi-8a.sh status            # what is possible on that phone, today
+./scripts/port-moto-g64-5g.sh status         # ...and on the moto g64 5G
+./tests/test-device-panels.sh                # every panel, checked with no phone
 ```
 
 `display-budget.sh` is the first step of the port and the only one that works
@@ -111,30 +113,39 @@ assembled. `ASTRIX_ALLOW_UNVERIFIED_FLASH=1` opens the first gate, loudly — a
 gate that cannot be opened is not a gate, and refusing every attempt is how no
 port ever starts.
 
-**Two routes exist for the Redmi 8A today**, because "unsupported" is not the
-same as "unusable" and collapsing the two wastes the phone most people have in
-their pocket:
+**Routes exist for both phones today**, because "unsupported" is not the same as
+"unusable" and collapsing the two wastes the phone most people have in their
+pocket. Each device gets the same three routes through
+`scripts/port-<device>.sh`:
 
 ```bash
-# Run the Astrix GUI on the phone. No unlock, no flash, nothing destroyed.
-./scripts/port-redmi-8a.sh android-host pack
-./scripts/port-redmi-8a.sh android-host check
-./scripts/port-redmi-8a.sh android-host push
+DEV=redmi-8a            # or: DEV=moto-g64-5g
 
-# Boot-test Astrix's kernel. Replaces Android's kernel; the screen stays dark,
-# because the Adreno 505 has no mainline driver and nothing can draw with it.
+# 1. Run the Astrix GUI on the phone. No unlock, no flash, nothing destroyed.
+./scripts/port-$DEV android-host pack
+./scripts/port-$DEV android-host check
+./scripts/port-$DEV android-host push
+
+# 2. Boot-test Astrix's kernel. Replaces the phone's kernel; the screen stays
+#    dark, because neither board has a usable mainline display driver yet.
 ./build.sh
-./scripts/port-redmi-8a.sh boot-test build
-ASTRIX_ALLOW_UNVERIFIED_FLASH=1 ./scripts/port-redmi-8a.sh boot-test stage
-./scripts/port-redmi-8a.sh boot-test log 300     # the proof is serial, not visual
+./scripts/port-$DEV boot-test build
+ASTRIX_ALLOW_UNVERIFIED_FLASH=1 ./scripts/port-$DEV boot-test stage
+./scripts/port-$DEV boot-test log 300      # the proof is serial, not visual
+
+# 3. Check the layout at each panel's real geometry. No phone at all.
+./tests/test-device-panels.sh
 ```
 
-The first runs the Astrix **userspace** on Android's own kernel — that is a real
-Astrix session on real hardware, and it is not booting Astrix OS. The second
-boots Astrix's **kernel** and proves it reaches userspace, and proves nothing
-about the display. Both say which is which, every time they run. Full detail,
-including exactly what has and has not been executed against a physical device,
-is in [`docs/REDMI-8A.md`](docs/REDMI-8A.md).
+Route 1 runs the Astrix **userspace** on the phone's own kernel — a real Astrix
+session on real hardware, and not booting Astrix OS. Route 2 boots Astrix's
+**kernel** and proves it reaches userspace, proving nothing about the display.
+Route 3 is a pass/fail test today: it runs the shell at 1080×2400 and
+720×1520 and asserts the dock, keyboard and status bar fit and accept taps,
+which the 1024×768 QEMU dev environment cannot tell you. Each script says which
+route is which, every time it runs. Full detail, including exactly what has and
+has not been executed against physical hardware: [`docs/REDMI-8A.md`](docs/REDMI-8A.md)
+and [`docs/MOTO-G64-5G.md`](docs/MOTO-G64-5G.md).
 
 Full detail on what has been built and what is missing for each phone is in
 [`docs/DEVICES.md`](docs/DEVICES.md); the ordered bring-up procedure, and how to
@@ -165,11 +176,13 @@ than a confusing error 180 seconds later.
 | Visual language | Vector icon glyphs (14, drawn as signed distance fields), gradient cards with soft shadows, glass status/navigation bars, depth in the wallpaper. Verified by `test-glyphs` (every glyph must have ink and be centred) and by rendering every screen to `build/screens/` |
 | System on-screen keyboard | **Verified typing**: QWERTY, symbols, shift/caps, space/return/backspace. Keys are delivered through `zwp_virtual_keyboard_v1`, so they reach the focused app instead of stopping at the shell — confirmed on a booted VM (`on-screen key 'a'` → `key 38 pressed`) and on every host test run |
 | Native apps (terminal, files, sysinfo, settings, package manager, APK manager) | Built and installed as ARM64 ELF binaries |
-| Host test suite | 39 tests, all passing |
+| Host test suite | 43 tests, all passing |
 | Android APK execution (Waydroid) | **Not implemented** — see `docs/ANDROID.md` |
 | Physical-device boot | **Not implemented** — no phone has ever been booted. Profiles and a gated flasher exist for the Redmi 8A and moto g64 5G; see `docs/DEVICES.md` |
-| Redmi 8A: run the Astrix GUI on the phone | `scripts/port-redmi-8a.sh android-host` — the Astrix userspace in a proot chroot on Android's own kernel, bridged out through Termux:X11. Nothing unlocked, nothing flashed. **This is not booting Astrix OS**, and the script says so every time it runs |
-| Redmi 8A: boot-test the Astrix kernel | `scripts/port-redmi-8a.sh boot-test` — build a flashable boot image, stage it, read the proof off `ttyMSM0` over USB. The screen stays dark the whole time: the Adreno 505 has no mainline driver at all. `docs/REDMI-8A.md` |
+| Running the Astrix GUI on a phone | `scripts/port-<device>.sh android-host` — the Astrix userspace in a proot chroot on Android's own kernel, bridged out through Termux:X11. Nothing unlocked, nothing flashed. **This is not booting Astrix OS**, and the script says so every time it runs. Works for both the Redmi 8A and the moto g64 5G |
+| Boot-testing Astrix's kernel on a phone | `scripts/port-<device>.sh boot-test` — build a flashable boot image, stage it, read the proof off `ttyMSM0` over USB. The screen stays dark: the Adreno 505 has no mainline driver at all, and the moto g64 5G's Mali is driven by Panfrost but has no upstream DSI/panel path to present to. `docs/REDMI-8A.md`, `docs/MOTO-G64-5G.md` |
+| Panel layout verified with no phone | `tests/test-device-panels.sh` — the shell runs at each profile's real geometry (1080×2400, 720×1520) and every screen is asserted to fit and to accept taps, through the real hit-test and a pixel check that the dock is painted where the tap handler expects. Renders land in `build/screens/<device>-<w>x<h>/` |
+| Redmi 8A: run the Astrix GUI on the phone | See the two rows above — `scripts/port-redmi-8a.sh`. `docs/REDMI-8A.md` |
 
 The last two rows are the honest ones. `docs/STATUS.md` is the single source of
 truth for what is verified, what is merely built, and what does not exist yet.
@@ -262,7 +275,12 @@ Six stages, currently **31 passing / 0 failing**:
 - `test-devices` — device profiles cannot claim a boot nobody observed,
   `flash-device.sh` must refuse an unsupported device, the override is the only
   thing that opens that refusal (and it must announce itself when it does), and
-  the per-device port tool must keep its own gate
+  every device must have a port tool that keeps its own gate
+- `test-device-panels` — the shell at each device profile's **real** panel
+  geometry, 1080×2400 and 720×1520, with no phone. Asserts the dock, keyboard
+  and status bar fit and accept taps through the real hit-test, and that the
+  dock is painted where the tap handler says it is. It exists because the QEMU
+  dev environment is 1024×768, a shape neither phone has
 
 The last one is the important one: it is the test that catches "the shell is
 dead and nothing says why", which is the failure mode that matters most for an

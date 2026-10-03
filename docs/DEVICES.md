@@ -82,7 +82,7 @@ is in [`docs/PORTING.md`](PORTING.md).
 | --- | --- | --- |
 | **QEMU (`virt`, arm64)** | **Boots.** | Every `./build.sh`; `tests/test-wayland-session.sh` runs the real compositor and shell under emulation; ~10 min to a mapped shell, ~190 s to `first-boot-complete`. |
 | Redmi 8A (olive) | Does not boot — but the GUI **can** be run on it, and the kernel **can** be boot-tested on it | Blockers below; two routes in [`docs/REDMI-8A.md`](REDMI-8A.md). |
-| moto g64 5G (retin) | Does not boot | Blockers below. |
+| moto g64 5G (retin) | Does not boot — but the GUI **can** be run on it, the kernel **can** be boot-tested on it, and the panel layout **is** verified with no phone | Blockers below; three routes in [`docs/MOTO-G64-5G.md`](MOTO-G64-5G.md). |
 
 The QEMU path is not a toy: the same rootfs, the same compositor, the same
 shell and the same apps run there, over a real DRM/KMS device, a real libinput
@@ -165,6 +165,26 @@ An ordered path, each step independently verifiable, is recorded in
 4. Panel calibration (timings, porch values, gamma)
 5. The userspace port
 
+### What *is* possible on this phone today
+
+This is the closer of the two boards, and "closer" is not "working". There are
+three routes, named for what they prove rather than for how they feel:
+
+| Route | What it does | Proves | Costs you |
+| --- | --- | --- | --- |
+| `android-host` | Runs the Astrix **userspace** as a `proot` chroot on the phone's own Android kernel, output bridged through Termux:X11 → SurfaceFlinger | The compositor, shell, keyboard and apps work on this SoC at 1080×2400 | Nothing. No unlock, no flash, no partition touched. |
+| `boot-test` | Flashes Astrix's **kernel** to `boot` and reads the USB serial console | Astrix's kernel starts on `retin` and reaches userspace | An unlock token (IMEI request, emailed back), and Android until you flash it back |
+| `no-boot` | `./tests/test-device-panels.sh` — renders every screen at this panel's exact geometry and asserts the dock, keyboard and status bar fit and accept taps | That the UI actually fits 1080×2400 | Nothing. **This one is a pass/fail test today.** |
+
+```sh
+./scripts/port-moto-g64-5g.sh status
+./tests/test-device-panels.sh
+```
+
+None of the three boots Astrix OS, and the script says so every time it runs.
+Full detail, including exactly what has and has not been executed against a
+physical `retin`: [`docs/MOTO-G64-5G.md`](MOTO-G64-5G.md).
+
 ## What has been built for these ports
 
 The honest answer is: the parts that can be built without the missing drivers,
@@ -190,10 +210,18 @@ plus the machinery that stops the missing parts being forgotten.
   confirmation of the codename. `ASTRIX_ALLOW_UNVERIFIED_FLASH=1` opens the
   first gate, loudly and only when explicitly set: a gate that cannot be opened
   is not a gate, and refusing every attempt is how no port ever starts.
-- **`scripts/port-redmi-8a.sh`** — the device-specific routes: pack and push the
+- **`scripts/port-<device>.sh`** — the device-specific routes, one thin wrapper per
+  profile over the shared machinery in `scripts/port-common.sh`: pack and push the
   Astrix userspace to run on Android's own kernel, or build and stage a
   boot-test image. Same override requirement for the staging half. See
-  [`REDMI-8A.md`](REDMI-8A.md).
+  [`REDMI-8A.md`](REDMI-8A.md) and [`MOTO-G64-5G.md`](MOTO-G64-5G.md).
+- **`tests/test-device-panels.sh`** — the only route that is a *test* rather than
+  a plan. Runs the shell at every profile's real panel geometry and asserts the
+  dock, keyboard and status bar fit and accept taps, with no phone, no
+  bootloader and no QEMU. The geometry is read from the profiles so it cannot
+  drift from the hardware, and the renders land in
+  `build/screens/<device>-<w>x<h>/`. This matters because the QEMU dev
+  environment is 1024×768 — a shape neither phone has.
 - **`scripts/build-device.sh`** — the other half of the same promise. It
   assembles `build/device/<device>/` (kernel, dtb, rootfs) and refuses for the
   same reason, so a bundle nobody has booted from cannot be built by accident.
@@ -203,7 +231,7 @@ plus the machinery that stops the missing parts being forgotten.
 - **`tests/test-devices.sh`** — fails the build if a profile claims support
   without a verified boot, proves the flasher refuses, proves the override is
   what opens the gate (and that it announces itself when it does), and proves
-  the per-device port tool exists and keeps its own gate.
+  every device has a port tool that keeps its own gate.
 
 ## Getting to a real boot
 

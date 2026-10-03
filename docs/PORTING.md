@@ -262,11 +262,25 @@ Two limits worth stating rather than discovering:
 * `fastboot`-style screenshots of the console are not the compositor's output.
   The UI is inspected through `build/screens/`.
 
-Run the host test suite — 39 tests, no hardware, no QEMU — with:
+Run the host test suite — 43 tests, no hardware, no QEMU — with:
 
 ```bash
 ./tests/run-all.sh --fast
 ```
+
+And check the layout at each device profile's real panel geometry, which is the
+one part of a phone port that can be verified before anything is flashed:
+
+```bash
+./tests/test-device-panels.sh
+```
+
+This runs the shell at 1080×2400 (moto g64 5G) and 720×1520 (Redmi 8A) and
+asserts the dock, the on-screen keyboard and the status bar all fit and all
+accept a tap, then renders every screen per device into
+`build/screens/<device>-<w>x<h>/`. It exists because the QEMU dev environment is
+1024×768 — a landscape shape neither phone has — so a shell that lays out
+perfectly there can still put its dock off the bottom of a 2400-row screen.
 
 ---
 

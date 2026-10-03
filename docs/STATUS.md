@@ -26,7 +26,7 @@ inferred from source code.
 | V7 | All 8 GUI binaries are genuine ARM64 ELF with the right linkage | `file` + `ldd` in the build: compositor → `libwlroots-0.18.so` + `libwayland-server.so.0`; shell/apps → `libwayland-client.so.0` |
 | V8 | Every package in `config/packages.txt` exists for arm64 in Debian trixie | `tests/test-packages.sh`, against the real archive index |
 | V9 | The Debian userland is complete and usable | The graphical session is built and run *from* it; `bash`, `apt` and `coreutils` are present |
-| V10 | The host test suite passes | `./tests/run-all.sh --fast` → **39 passed, 0 failed** (syntax, UI, gestures, shell input, shell framebuffer ownership, packages, rendering, Wayland session, listener check, compositor focus teardown, pointer retarget, device profiles, display link budget, on-screen keyboard) — `test-gestures` 159 checks, `test-shell-input` covers the dock *and* the recents-card geometry at three panel sizes |
+| V10 | The host test suite passes | `./tests/run-all.sh --fast` → **43 passed, 0 failed** (syntax, UI, gestures, shell input, shell framebuffer ownership, packages, rendering, Wayland session, listener check, compositor focus teardown, pointer retarget, device profiles, display link budget, on-screen keyboard) — `test-gestures` 159 checks, `test-shell-input` covers the dock *and* the recents-card geometry at three panel sizes |
 | V11 | The image self-verification gate works | `build-image.sh` refuses to emit an image that fails its checks |
 | V12 | A real `seat0` logind session is created for `astrix` and handed to the compositor | Boot log: `loginctl attach` succeeds, drop-in `/run/systemd/system/astrix-compositor.service.d/10-logind-session.conf` written, compositor reports `wlr_session ready (seat seat0, vt 0)` |
 | V13 | The compositor drives the virtio-gpu **DRM/KMS** backend on a booted VM | Boot log: `session reported 1 KMS device(s); first is fd 10 (226:0)` → `Initializing DRM backend for /dev/dri/card0 (virtio_gpu)` → `Found 1 DRM CRTCs` → `Found 2 DRM planes` → `DRM backend ready` → `libinput backend attached`. This is a real KMS device, not the headless backend. |
@@ -70,6 +70,8 @@ actually stood in the way. |
 
 | V27 | **The shell is no longer a set of flat rectangles** | 20 icons as signed distance fields (`astrix_draw_glyph`), gradient cards with soft shadows and a specular top edge (`astrix_draw_card`), glass status and navigation surfaces (`astrix_fill_glass`), two radial blooms in the wallpaper, a floating navigation pill, and a keyboard that is a raised sheet with gradient keys where a pressed key loses its shadow. Checked rather than eyeballed: `tests/glyph-proof.c` renders every glyph as ASCII and fails the build if it draws under 120 pixels of ink **or** if the ink is more than a tenth of the box off centre — it immediately caught a WIFI arc at 110 pixels, centred 16px out. Hit-testing was deliberately left untouched so `test-shell-input` and `test-shell-size` still pass against the new painting unchanged. |
 | V28 | **The Redmi 8A has two working routes, and neither is called "it boots"** | `scripts/port-redmi-8a.sh` implements (a) `android-host`, which packs the Astrix userspace as an ELF dependency closure (~150 files, 19 MB, 6.0 MB compressed) and runs it as a proot chroot on Android's own kernel via Termux:X11 — nothing unlocked, nothing flashed; and (b) `boot-test`, which builds a fastboot-stageable Android boot image containing Astrix's kernel and reads the proof off `ttyMSM0` over USB. Verified here: the bundle builds with **no dangling symlinks**, `abootimg` reads the resulting 72 MB boot image back as valid, and every no-phone path exits with an explicable reason. **No physical `olive` has ever been connected to this code.** Both routes are labelled by what they prove and, explicitly, what they do not. |
+
+| V29 | **Both phones get the same tooling, and the layout is verified with no phone** | `scripts/port-common.sh` holds the device-agnostic machinery and each profile gets a thin wrapper, so `port-moto-g64-5g.sh` is new functionality rather than 800 copied lines that drift. **The panel layout is now a real test**: `tests/test-device-panels.sh` reads `DEVICE_PANEL_WIDTH`/`HEIGHT` out of every profile and runs the shell at 1080×2400 and 720×1520, asserting the dock band is on screen, all four icons are at least 15% of the panel width, a tap at each icon's centre hit-tests through the real `hit_test_dock_icon()`, all 44 keyboard keys fit with none a sliver, the status-bar keyboard button sits above the keyboard, and — through a pixel-luminance comparison against the wallpaper — that **the dock is painted where the hit-test claims it is**. Sizes are checked as fractions of the panel, not pixels, because the two phones have completely different densities. It also renders all 15 screens per device into `build/screens/<device>-<w>x<h>/`. This exists because the QEMU dev environment is 1024×768, a shape neither phone has, and a shell that lays out there can put its dock off a 2400-row screen. Verified: passes for both devices, and fails as it should on an impossible geometry (6 failures, non-zero exit). |
 
 ### The four bugs the keyboard work exposed
 
@@ -183,11 +185,17 @@ These are things that could be *mistaken* for support, and are not:
 
 - **"Astrix is a real OS for your phone."** It is a real OS that boots in
   QEMU. It has never been flashed to, or booted on, physical ARM64 hardware.
-- **"You can run Astrix on your Redmi 8A today."** You can run the Astrix
-  *userspace* on a Redmi 8A today, on Android's own kernel, with nothing
-  unlocked and nothing flashed (`scripts/port-redmi-8a.sh android-host`). That
-  is a real Astrix session on real hardware and it is **not** booting Astrix OS.
-  The kernel itself has never been on the phone. See `docs/REDMI-8A.md`.
+- **"You can run Astrix on your Redmi 8A / moto g64 5G today."** You can run the
+  Astrix *userspace* on either phone today, on Android's own kernel, with
+  nothing unlocked and nothing flashed (`scripts/port-<device>.sh
+  android-host`). That is a real Astrix session on real hardware and it is
+  **not** booting Astrix OS. The kernel itself has never been on either phone.
+  See `docs/REDMI-8A.md` and `docs/MOTO-G64-5G.md`.
+- **"The moto g64 5G is nearly supported because Panfrost works."** Panfrost
+  does drive the Mali-G57 MC2 — that is the real difference from the Redmi 8A.
+  But a GPU with nothing to present a scanout to is not a display, and MT6855's
+  DSI controller and panel driver do not exist upstream. The screen stays dark
+  on a boot test either way.
 - **"Android apps work."** They do not run at all.
 - **"The camera works."** There is no camera code.
 - **"It's secure."** It has a reasonable privilege model for the graphical

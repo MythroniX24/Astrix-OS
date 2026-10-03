@@ -104,10 +104,23 @@ static void seed_status(struct astrix_shell *sh) {
 }
 
 int main(int argc, char **argv) {
+	/*
+	 * render-screens <output-directory> [width height]
+	 *
+	 * The width/height are optional so that the same harness renders both the
+	 * dev environment's geometry and each device profile's real panel. That
+	 * matters because the panel sizes are the one thing about a phone that can
+	 * be checked without the phone: a shell that lays out at 1024x768 can put
+	 * its dock off the bottom of a 2400-row screen. tests/test-device-panels.sh
+	 * asserts the geometry; this renders it so a human can look at it.
+	 */
 	const char *outdir = argc > 1 ? argv[1] : "build/screens";
+	int panel_w = argc > 3 ? atoi(argv[2]) : 720;
+	int panel_h = argc > 3 ? atoi(argv[3]) : 1600;
 
-	struct astrix_shell *sh = astrix_shell_create(720, 1600);
+	struct astrix_shell *sh = astrix_shell_create(panel_w, panel_h);
 	if (!sh) {
+		fprintf(stderr, "cannot create a shell at %dx%d\n", panel_w, panel_h);
 		return 1;
 	}
 	seed_apps(sh);
