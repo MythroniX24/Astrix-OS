@@ -184,6 +184,60 @@ software rasteriser, a bitmap font, clipping, and rounded rectangles. It is
 deliberately not accelerated — the compositor does the scanout, and a phone
 UI made of solid rounded rectangles does not need a shader.
 
+### 2.9 The seat, and who is allowed to type at it
+
+The seat is the single point where "who receives input" is decided, and on a
+phone it has to be decided the same way on every device — including the ones
+with no hardware keyboard at all.
+
+**Focus.** `astrix_shell_apply_keyboard_focus()` is deliberately unconditional:
+whichever surface is foreground gets `wl_keyboard.enter` and a keymap, without
+asking. A phone has exactly one foreground surface, so the negotiation every
+desktop compositor performs buys nothing here, and skipping it removes a whole
+class of bug where an app draws a text field and never receives a keystroke.
+The same function runs on every map, unmap, focus change and seat-capability
+change, so focus cannot drift away from what is on screen.
+
+**Typing into another client.** Only a client that holds the seat may type into
+another client, so the shell cannot fake it: it uses
+`zwp_virtual_keyboard_v1`, the protocol that exists precisely for a shell
+typing into an app. wlroots' implementation is worth knowing about, because it
+is not what most code assumes:
+
+- the manager is created by wlroots only from its *Wayland backend*. Astrix
+  binds its own `wl_display` socket and builds its own seat, so it creates the
+  manager itself: `wlr_virtual_keyboard_manager_v1_create(server->wl_display)`.
+- a virtual keyboard is **not an input device**. wlroots gives it a
+  `wlr_keyboard` and never registers it with a backend, so it never arrives
+  through `backend->events.new_input`. It is announced on the manager's
+  `events.new_virtual_keyboard` signal, and a compositor that only watches the
+  backend will never hear about it. Astrix watches both, attaches the
+  keyboard, and gives it to the seat when no hardware keyboard holds it —
+  which is the normal state on a phone, and therefore the case that makes
+  on-screen typing possible at all.
+- keys and modifiers are forwarded to the seat with
+  `wlr_seat_keyboard_notify_key()`, so they obey whatever grab is active and
+  go to whatever surface currently holds focus.
+
+### 2.10 The display port is gated by arithmetic before it has a driver
+
+Two target phones exist as device profiles with verified hardware facts, and
+neither boots. Before a single line of panel driver exists, the port is gated
+on arithmetic that either works or does not: `scripts/display-budget.sh`
+computes, from the vendor panel spec, what a panel demands of its MIPI DSI link
+(pixel clock → aggregate bits/s → per-lane, against the SoC's per-lane cap)
+and exits non-zero if the demand cannot be met. `device.sh check` runs it for
+every profile, and `tests/test-display-budget.sh` pins both directions,
+including the refusal. Blanking overhead is an assumption and is labelled as one
+everywhere it is used.
+
+That gate exists because it changed the plan before any code was written: the
+moto g64 5G's 1080x2400 at 120 Hz needs 2.258 Gbit/s per lane against a
+2.5 Gbit/s lane — 10% headroom, which is where DSI link training starts
+failing in ways that look like driver bugs. The panel comes up at 60 Hz first.
+See `docs/PORTING.md` for the ordered seven-stage bring-up and
+`docs/DEVICES.md` for what is blocked.
+
 ---
 
 ## 3. Process and privilege model

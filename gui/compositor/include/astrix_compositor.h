@@ -119,6 +119,16 @@ struct astrix_keyboard {
 	struct wl_listener modifiers;
 	struct wl_listener key;
 	struct wl_listener destroy;
+	/*
+	 * True for a keyboard a *client* created through
+	 * zwp_virtual_keyboard_v1 - that is, an on-screen keyboard - as
+	 * opposed to one libinput found. The difference matters on teardown:
+	 * a virtual keyboard's disappearance must not take the seat's
+	 * keyboard capability away, because the physical keyboard that
+	 * granted it may still be attached. It also carries no wlr_input_device
+	 * of its own, so its destroy signal lives on wlr_keyboard.base.
+	 */
+	bool virtual_kb;
 };
 
 struct astrix_pointer {
@@ -188,6 +198,12 @@ struct astrix_server {
 	struct wlr_primary_selection_v1_device_manager *primary_selection_manager;
 	struct wlr_xdg_shell *xdg_shell;
 	struct wlr_seat *seat;
+	/*
+	 * Kept, not discarded, so its new_virtual_keyboard signal can be
+	 * watched for the lifetime of the session. See input.c: a virtual
+	 * keyboard never arrives through the backend.
+	 */
+	struct wlr_virtual_keyboard_manager_v1 *vkbd_manager;
 
 	struct wlr_output_layout *output_layout;
 	struct wlr_cursor *cursor;
@@ -211,6 +227,7 @@ struct astrix_server {
 	struct wl_listener new_input;
 	struct wl_listener backend_destroy;
 	struct wl_listener new_toplevel;
+	struct wl_listener new_virtual_keyboard;
 
 	/* Set when the shell's surface commits, so we can re-evaluate which
 	 * client is the foreground app. */
@@ -223,6 +240,16 @@ struct astrix_server {
 	 * routes input back to the shell so the home screen is never dead.
 	 */
 	struct wlr_xdg_toplevel *shell_toplevel;
+
+	/*
+	 * The surface the seat's keyboard focus was last pushed to, and
+	 * whether we have already complained about having no keyboard at all.
+	 * Purely diagnostic: without it, "the on-screen keyboard types nothing"
+	 * is indistinguishable from "the shell never had focus", because
+	 * neither path logs anything.
+	 */
+	struct wlr_surface *keyboard_focus;
+	bool warned_no_seat_keyboard;
 
 	struct timespec last_present;
 	struct wl_event_source *frame_timer;
@@ -246,6 +273,8 @@ void astrix_log(enum wlr_log_importance level, const char *fmt, ...)
 /* Provided by input.c */
 void astrix_input_init(struct astrix_server *server);
 void astrix_input_finish(struct astrix_server *server);
+/* wl_signal listener: manager->events.new_virtual_keyboard */
+void astrix_input_virtual_keyboard(struct wl_listener *listener, void *data);
 
 /* Provided by shell.c */
 void astrix_shell_init(struct astrix_server *server);

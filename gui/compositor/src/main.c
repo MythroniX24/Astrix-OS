@@ -695,14 +695,26 @@ int astrix_compositor_run(const struct astrix_config *cfg) {
 	 * So the manager is created here, against our own wl_display. One
 	 * line, and it is the difference between a keyboard that types and a
 	 * keyboard that is a picture of a keyboard.
-	 */
-	struct wlr_virtual_keyboard_manager_v1 *vkbd_manager =
-		wlr_virtual_keyboard_manager_v1_create(server->wl_display);
+	 */struct wlr_virtual_keyboard_manager_v1 *vkbd_manager =
+	    wlr_virtual_keyboard_manager_v1_create(server->wl_display);
 	if (!vkbd_manager) {
 		astrix_log(WLR_ERROR,
 		           "could not create the virtual keyboard manager; the "
 		           "on-screen keyboard will not be able to type");
 	} else {
+		server->vkbd_manager = vkbd_manager;
+		/*
+		 * The second half of the fix, and the half that is easy to miss:
+		 * a client-created virtual keyboard does NOT arrive through the
+		 * backend's new_input signal. wlroots keeps it on the manager and
+		 * announces it here. Watching the backend but not this signal is
+		 * what made an on-screen keyboard that drew, queued keys and typed
+		 * nothing (bug 48) - the keys were emitted on a wlr_keyboard
+		 * nobody had subscribed to.
+		 */
+		server->new_virtual_keyboard.notify = astrix_input_virtual_keyboard;
+		wl_signal_add(&vkbd_manager->events.new_virtual_keyboard,
+		              &server->new_virtual_keyboard);
 		astrix_log(WLR_INFO, "virtual keyboard manager ready");
 	}
 

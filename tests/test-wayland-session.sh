@@ -166,6 +166,16 @@ if ! grep -q "virtual keyboard ready" "$ROOTFS$LOG_DIR_CHROOT/shell.log" 2>/dev/
   fail "the shell did not obtain a virtual keyboard; on-screen keys cannot be delivered"
 fi
 pass "the shell obtained a virtual keyboard and sent it a keymap"
+#
+# The compositor has to *subscribe* to client-created virtual keyboards.
+# wlroots does not register one with any backend, so it never arrives through
+# the backend's new_input signal; the compositor has to watch the manager's
+# new_virtual_keyboard signal instead. Missing that second half is what made
+# the on-screen keyboard draw, queue keys and type nothing at all.
+if ! grep -q "virtual keyboard created by a client" "$ROOTFS$LOG_DIR_CHROOT/compositor.log" 2>/dev/null; then
+  fail "the compositor did not attach the shell's virtual keyboard; its keys go nowhere"
+fi
+pass "the compositor attached the client's virtual keyboard"
 
 # ---------------------------------------------------------------------------
 # The whole point of the keyboard is that a key reaches an application. The
@@ -201,20 +211,24 @@ if [ "${queued:-0}" -lt 3 ]; then
 fi
 pass "all three keys were injected through the virtual keyboard"
 #
-# Delivery depends on the seat having a keyboard to deliver with: wlroots
-# forwards a virtual keyboard's keystrokes through the seat's keyboard, so on
-# the headless backend (no libinput, no hardware keyboard) there is nothing to
-# forward through. That is a property of the test environment, not of the
-# keyboard, so it is reported as skipped here rather than passed - and on a
-# real session, where a keyboard is attached, the check is enforced.
-if grep -q "keyboard added" "$ROOTFS$LOG_DIR_CHROOT/compositor.log" 2>/dev/null; then
-  if ! grep -q "key .* pressed" "$SELFLOG" 2>/dev/null; then
-    fail "no key came back through wl_keyboard; the injection path is broken"
-  fi
-  pass "the compositor delivered the injected keys back to the focused client"
-else
-  info "  skip: the headless backend has no keyboard, so wlroots has nothing to"
-  info "        forward the injected keys through (verified on a real session)"
+# Delivery depends on the seat having a keyboard to deliver with, and it now
+# always does: wlroots needs no hardware keyboard to forward a key, it needs a
+# keyboard object on the seat, and a client-created virtual keyboard becomes
+# one (the compositor hands it to the seat when nothing else holds it). So
+# this is asserted unconditionally here - on the headless backend as well as
+# on a real session - instead of being skipped when no keyboard is attached.
+# A keyboard that cannot be shown to deliver a key is a keyboard nobody may
+# claim works.
+if ! grep -q "keyboard added\|virtual keyboard created by a client" "$ROOTFS$LOG_DIR_CHROOT/compositor.log" 2>/dev/null; then
+  fail "the seat has no keyboard at all, so injected keys cannot be delivered"
 fi
+if ! grep -q "keyboard focus entered" "$SELFLOG" 2>/dev/null; then
+  fail "the focused client never received wl_keyboard.enter; the seat has no focus for it"
+fi
+pass "the focused client was given wl_keyboard.enter"
+if ! grep -q "key .* pressed" "$SELFLOG" 2>/dev/null; then
+  fail "no key came back through wl_keyboard; the injection path is broken"
+fi
+pass "the compositor delivered the injected keys back to the focused client"
 
 ok "Wayland session smoke test passed"

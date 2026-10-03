@@ -214,7 +214,34 @@ security model for anything.
 
 ---
 
-## 9. Application sandboxing
+## 9. Keyboard focus and input injection
+
+`wl_keyboard.enter` follows the foreground surface unconditionally — see
+`docs/ARCHITECTURE.md` §2.9. That is a usability decision, and it has exactly
+one security consequence, which is worth stating plainly:
+
+**Any client may create a virtual keyboard.** `zwp_virtual_keyboard_v1` is
+advertised to every client on the seat, so a malicious app can synthesise
+keystrokes into whichever surface currently holds keyboard focus. There is no
+permission check, no confirmation, and no audit trail. On a phone this is the
+"confused deputy" case in its purest form: an app in the background decides what
+you type into the app in the foreground.
+
+The compositor is the only place this can be fixed, and the fix is small —
+`wl_display_set_global_filter()` to publish the virtual keyboard manager only
+to the shell's client, or to reject the `create_virtual_keyboard` request from
+anyone else. It is **not implemented**, because it is currently the shell that
+needs it and nothing else exists that could abuse it.
+
+The same section records the other half: the on-screen keyboard is a real input
+path, verified end to end on a booted VM, which means a keystroke typed on the
+glass and one injected by a client are indistinguishable to the client. That is
+inherent to the protocol, and it is why restricting who may hold a virtual
+keyboard is the only mitigation available.
+
+---
+
+## 10. Application sandboxing
 
 **Not implemented.** Every app runs as `astrix`, with that user's full access
 to that user's files. A malicious app is confined only by the uid boundary.
@@ -231,7 +258,7 @@ The intended model, for later:
 
 ---
 
-## 10. Network security
+## 11. Network security
 
 Provided by stock Debian, and adequate for the parts that exist:
 
@@ -244,7 +271,7 @@ Not implemented: certificate pinning, a VPN service, private DNS per-network.
 
 ---
 
-## 11. Known gaps, in one list
+## 12. Known gaps, in one list
 
 | Gap | Severity | Status |
 | --- | --- | --- |
@@ -254,6 +281,7 @@ Not implemented: certificate pinning, a VPN service, private DNS per-network.
 | No A/B verified updates | High | Designed, not implemented |
 | No secure boot / image signing on device | High | Not implemented |
 | Android compatibility not confined to a sandbox | High | Not implemented (see `docs/ANDROID.md`) |
+| Any client may create a virtual keyboard and inject keys into the focused client | High | Not implemented; §9, fix is a global filter |
 | No privileged package helper wired to polkit | Medium | Not implemented; UI says so |
 | No `debsig-verify` enforcement in the shipped apt config | Medium | Package present, config not yet strict |
 | No rate limiting on the lock screen | Medium | No lock screen to rate-limit |

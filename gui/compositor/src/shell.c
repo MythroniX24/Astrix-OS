@@ -114,12 +114,34 @@ void astrix_shell_apply_keyboard_focus(struct astrix_server *server) {
 	struct wlr_keyboard *kb = wlr_seat_get_keyboard(server->seat);
 	if (!kb) {
 		/*
-		 * No keyboard attached yet. Nothing to notify, and nothing
-		 * broken: the same call runs again when a keyboard appears.
+		 * No keyboard on the seat yet. wlroots sends neither
+		 * wl_keyboard.enter nor a keymap without one, so every key press
+		 * in the meantime is dropped - silently. The same call runs again
+		 * when a keyboard appears, so this is a delay and not a failure,
+		 * but it is the single most useful thing to have said out loud
+		 * when on-screen typing "does nothing": say it once, not on every
+		 * focus change.
 		 */
+		if (!server->warned_no_seat_keyboard) {
+			server->warned_no_seat_keyboard = true;
+			astrix_log(WLR_ERROR,
+			           "no keyboard on the seat: keys will be dropped until one "
+			           "appears");
+		}
 		return;
 	}
+	server->warned_no_seat_keyboard = false;
 	struct wlr_surface *target = astrix_shell_input_target(server);
+	if (target != server->keyboard_focus) {
+		server->keyboard_focus = target;
+		astrix_log(WLR_INFO, "keyboard focus -> %s",
+		           target ? (target == (server->shell_toplevel
+		                                    ? server->shell_toplevel->base->surface
+		                                    : NULL)
+		                          ? "the Astrix Shell"
+		                          : "a foreground app")
+		                  : "nothing (no client has keyboard focus)");
+	}
 	if (!target) {
 		wlr_seat_keyboard_notify_clear_focus(server->seat);
 		return;

@@ -5,7 +5,7 @@ merely *built*, and what does *not exist*. If a capability is not in the
 "verified" or "built" tables, it is not in the OS, regardless of what any
 other file implies.
 
-Last updated: 0.1.0 development milestone, M4 reached (boot + real input on a booted VM).
+Last updated: 0.1.0 development milestone, M4 reached (boot + real input + real typing on a booted VM).
 
 ---
 
@@ -62,11 +62,15 @@ actually stood in the way. |
 
 | V23 | **The display port has an arithmetic gate before it has a driver** | `scripts/display-budget.sh` computes what each phone's panel demands of its MIPI DSI link from the vendor panel spec: the moto g64 5G's 1080x2400 **120Hz** needs 2.258 Gbit/s per lane against a 2.5 Gbit/s lane (**10% headroom**), the Redmi 8A's 720x1520@60 needs 477 Mbit/s (**81%**). The tool *refuses* an infeasible panel (exit 1) rather than rounding it into a yes, `device.sh check` fails on a profile whose panel cannot be driven, and `tests/test-display-budget.sh` pins both directions. The finding that changes the port plan: bring the moto panel up at **60Hz first** (55% headroom), because 10% is where DSI link training starts failing in ways that look like driver bugs. Also: `scripts/build-device.sh` now exists and is gated by the same rule as the flasher, so no flash bundle can be assembled for a device nobody has booted, and `tests/test-devices.sh` proves it refuses and leaves nothing on disk. The ordered bring-up, including how to verify each of the seven DRM stages over serial/`dmesg` instead of by looking at the phone, is in `docs/PORTING.md`. **Still no phone boots.** This is groundwork, not progress-claimed-as-a-boot. Re-verified after the change: `./build.sh` → `BUILD COMPLETE in 513s`, 35/35 host tests, and a fresh VM boot reaches `astrix-compositor ready` → `panel reports 1024x768` → `launched 'Files' as pid 942`. |
 
-| V24 | **The OS can type: a system on-screen keyboard that delivers real keys** | The shell owns a keyboard (status-bar button, or the `hide` key) with QWERTY, a symbol layer, one-shot shift, caps lock, space/return/backspace. A tap becomes a queued codepoint; `main.c` turns it into an xkb keycode by walking the keymap's level 0 and level 1 and pushes it through **`zwlr_virtual_keyboard_v1`** — the only Wayland-legal way for a shell to type into another client, because the seat belongs to the compositor. `tests/test-keyboard` (37 checks) pins the tap→character mapping, the one-shot shift, the symbol layer and the rule that a tap on the keyboard never also reaches the home screen behind it; it immediately caught a real SIGFPE (the symbol layer leaves the `zxcvbnm` row empty and the layout divided by its length). Three keyboard screens are rendered to `build/screens/` for inspection. Key injection is verified by injecting keys on a booted VM (see V25); it is not yet verified against a physical touchscreen. |
+| V24 | **The OS can type: a system on-screen keyboard that delivers real keys** | The shell owns a keyboard (status-bar button, or the `hide` key) with QWERTY, a symbol layer, one-shot shift, caps lock, space/return/backspace. A tap becomes a queued codepoint; `main.c` turns it into an xkb keycode by walking the keymap's level 0 and level 1 and pushes it through **`zwp_virtual_keyboard_v1`** — the only Wayland-legal way for a shell to type into another client, because the seat belongs to the compositor. `tests/test-keyboard` (37 checks) pins the tap→character mapping, the one-shot shift, the symbol layer and the rule that a tap on the keyboard never also reaches the home screen behind it; it immediately caught a real SIGFPE (the symbol layer leaves the `zxcvbnm` row empty and the layout divided by its length). Three keyboard screens are rendered to `build/screens/` for inspection. Delivery is asserted end to end — three taps, three queued keys, three `wl_keyboard.key` events back in the focused client — on every host test run (see V26). Key injection is verified on a booted VM with a keyboard attached (see V25); it is not yet verified against a physical touchscreen. |
 
-### The three bugs the keyboard work exposed
+| V25 | **The on-screen keyboard injects real keys into a booted VM** | On a real ARM64 boot (1024x768, virtio-keyboard attached), a QMP tap on the status-bar button opens the keyboard (`keyboard opened`) and a tap on a key produces `on-screen key 'a'` / `'b'` — the tap→codepoint half, driven through the guest's own evdev stack, not by calling the shell's function. |
 
-Writing the delivery half found three real defects, none of them in the layout
+| V26 | **Injected keys now reach a client** (bug 48) | The delivery half used to stop at the compositor, silently. wlroots 0.18 does not register a client-created virtual keyboard with any backend, so it never arrives through `backend->events.new_input`; the compositor now watches `manager->events.new_virtual_keyboard`, attaches the keyboard and gives it to the seat when nothing else holds it. Verified twice: (1) on a booted VM, `on-screen key 'a'` → `key 38 pressed` / `key 38 released` and `'b'` → 56, i.e. xkb keycodes reaching the focused client's `wl_keyboard`; (2) on every host test run, where three taps become three `key` events. The delivery assertion in `tests/test-wayland-session.sh` was previously **skipped whenever no hardware keyboard was attached** — the one environment where it mattered most was the one place it was not required; it is now asserted unconditionally, including `wl_keyboard.enter`. |
+
+### The four bugs the keyboard work exposed
+
+Writing the delivery half found four real defects, none of them in the layout
 logic the unit tests cover — which is the argument for having written it:
 
 | # | Defect | Symptom | Cause |
@@ -74,34 +78,51 @@ logic the unit tests cover — which is the argument for having written it:
 | 45 | The compositor never advertised a virtual keyboard manager | The keyboard drew, queued keys and typed nothing | wlroots only creates that global from its **Wayland backend**, and this compositor deliberately binds its own `wl_display` and builds its own seat. One line — `wlr_virtual_keyboard_manager_v1_create(server->wl_display)` — and `tests/test-wayland-session.sh` now asserts the global exists |
 | 46 | The vendored protocol XML put `new_id` before `seat` | `error marshalling arguments for create_virtual_keyboard: null value passed for arg 1`, then the shell died | The real protocol is **seat first, new_id second**; wayland-scanner older than 1.21 silently moves `new_id` to the front, and nothing says so at build time. The in-rootfs build uses 1.23 and is correct; `protocol/README.md` records the requirement |
 | 47 | The keymap fd was closed before the compositor read it | Shell exited ~2s after start, with no error at all | The compositor reads the fd when the request is *dispatched*. It is now held until after the roundtrip. The shell also grew a `SIGSEGV` backtrace handler, because the first symptom was one line reading `qemu: uncaught target signal 11` and that turned out to be a missing diagnostic, not the bug |
+| 48 | The compositor never subscribed to client-created virtual keyboards | Every key the on-screen keyboard sent went nowhere — silently | wlroots 0.18 gives a `zwp_virtual_keyboard_v1` a `wlr_keyboard` but **never registers it with any backend**, so it never reaches a compositor through `backend->events.new_input`. The only notification path is `manager->events.new_virtual_keyboard`, which nobody was listening to, so keys were emitted on a signal with no listener attached. The compositor now watches that signal, attaches the keyboard, and hands it to the seat when no hardware keyboard holds it — which is also the case that matters on a real phone |
 
 Bug 46 is the one worth remembering: a protocol definition compiled by a
 different version of the same tool produced a client that built, linked, ran,
 and died, with an error message that points nowhere near the cause.
 
-### What is NOT verified yet (bug 48, open)
+### The keyboard now delivers to a client (bug 48, fixed)
 
-The keyboard's **delivery** half is proven up to the compositor and stops there.
-On a booted VM (1024x768, virtio-keyboard attached):
+The delivery half used to stop at the compositor: keys were injected, nothing
+crashed, and no client ever received one. The cause was not the shell and not
+the seat's focus — it was that wlroots never told anybody the virtual keyboard
+had arrived. See bug 48 above.
 
-* tapping the status-bar button opens the keyboard — `keyboard opened`;
-* tapping keys produces the right characters — `on-screen key 'a'`,
-  `on-screen key 'b'`;
-* each one is injected — the compositor accepts the request and logs nothing
-  wrong, and the headless smoke test asserts three taps become three injected
-  keys on every run.
+The whole chain is now asserted on every host test run, headless backend
+included, in `tests/test-wayland-session.sh`:
 
-What has **not** been observed is a key arriving at a client. `key N pressed`
-never appears in the shell log — and neither does it for an *injected hardware*
-key (`send-input.sh key a`), which means this is not the virtual keyboard's
-fault: the seat is not granting keyboard focus to the focused surface. The
-compositor has `astrix_shell_apply_keyboard_focus()` for exactly this, so the
-next thing to look at is whether it runs at the moment the shell maps and
-whether `astrix_shell_input_target()` returns a surface at that point.
+```
+astrix-shell: self-test: queued 3 key(s) from the on-screen keyboard
+astrix-shell: keyboard focus entered
+astrix-shell: on-screen key 'a'
+astrix-shell: key 38 pressed      <- xkb keycode 38 = 'a'
+astrix-shell: key 38 released
+...
+astrix-shell: key 54 pressed      <- 'c'
+```
 
-So: the keyboard **looks and behaves** correct and delivers as far as the
-compositor, and no claim is made that an application has yet received a
-keystroke from it.
+and in the compositor's log, on the same run:
+
+```
+virtual keyboard manager ready
+virtual keyboard created by a client; attaching it
+seat capabilities: keyboard
+keyboard focus -> the Astrix Shell
+```
+
+The check used to be *skipped* whenever no hardware keyboard was attached,
+which is precisely the case that hid the bug for so long: the environment with
+no keyboard is the environment where a keyboard matters most, and it was the
+one place delivery was not required. It is now asserted unconditionally, and
+the same assertion covers `wl_keyboard.enter`, because "the client got a
+keymap" and "the client got a keystroke" are different claims and only the
+second one is the feature.
+
+Still **not** verified: typing on a physical touchscreen (no absolute-touch
+device exists on this QEMU host, see §6).
 
 ---
 
@@ -112,7 +133,7 @@ keystroke from it.
 | --- | --- |
 | `astrix-compositor` | Verified end to end on a booted VM (V13, V15): real DRM/KMS, libinput, binds its Wayland socket, serves a client. |
 | `astrix-shell` | Verified to connect and map its surface on a booted VM (V15). Rendering is software (pixman) under QEMU; no GPU-accelerated path has been exercised. |
-| `astrix-terminal` | Builds and installs as ARM64 ELF, and is launched by the same verified path as `astrix-files` (V19). Typing into it on a booted VM is not yet exercised — the system on-screen keyboard is not generalised. |
+| `astrix-terminal` | Builds and installs as ARM64 ELF, and is launched by the same verified path as `astrix-files` (V19). **Typing into it with the on-screen keyboard is not yet exercised on a booted VM.** Since V26 the keyboard is no longer the limitation — it delivers to whichever client holds keyboard focus — but the terminal's own input path (its `wl_keyboard` handler, cursor, line editing) has not been driven by it, so that stays unverified. |
 | `astrix-files` | **Launched and mapped on a booted VM** (V19): a dock tap forks the process, it connects to `astrix-0` and the compositor reports `new app registered` → `focus app: Files`. Also **terminated on request** (V20). |
 | `astrix-settings` | Builds and installs. Not yet exercised on a booted VM. |
 | `astrix-sysinfo` | Builds and installs. Not yet exercised on a booted VM. |
@@ -144,7 +165,8 @@ Listed so that nothing is mistaken for working.
 | **A/B verified updates / OTA** | Designed in `docs/DESIGN.md` §7.2. Not built. |
 | **Secure boot / verified image signing on device** | Nothing. |
 | **Privileged package helper (`astrix-pkg-helper`)** | Not written. Referenced by design only. |
-| **On-screen keyboard for arbitrary text entry** | Present in the terminal app. Not generalised into a system input method. |
+| **Typing in a real app with the system on-screen keyboard** | The keyboard is a system input method now (V26) and its delivery to the focused client is verified, but no *app* has been driven by it yet: `astrix-terminal` has never been typed into on a booted VM. |
+| **Text input in an IME sense** — composing, dead keys, non-Latin layouts, candidate windows | Nothing. The keyboard emits codepoints; there is no input-method protocol (`zwp_input_method_v1`) and no client binding one. |
 | **Notifications from third-party services** | Nothing. |
 | **Multi-user / guest / per-profile switching** | Single-user by design. |
 | **Accessibility services** (screen reader, talkback) | Nothing. |

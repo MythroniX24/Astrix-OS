@@ -992,6 +992,13 @@ static void keyboard_handle_enter(void *data, struct wl_keyboard *kb, uint32_t s
                                   struct wl_surface *surface, struct wl_array *keys) {
 	struct shell_state *st = data;
 	st->shell->has_focus = true;
+	/*
+	 * wl_keyboard.enter is the only proof that the compositor will actually
+	 * deliver keys here. Without it, a shell whose on-screen keyboard types
+	 * into a seat that has no focus looks exactly like a shell whose
+	 * on-screen keyboard is broken - and the two need opposite fixes.
+	 */
+	fprintf(stderr, "astrix-shell: keyboard focus entered\n");
 	draw_and_commit(st);
 }
 
@@ -999,6 +1006,7 @@ static void keyboard_handle_leave(void *data, struct wl_keyboard *kb, uint32_t s
                                   struct wl_surface *surface) {
 	struct shell_state *st = data;
 	st->shell->has_focus = false;
+	fprintf(stderr, "astrix-shell: keyboard focus left\n");
 }
 
 static void keyboard_handle_key(void *data, struct wl_keyboard *kb, uint32_t serial,

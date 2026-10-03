@@ -164,8 +164,23 @@ Not for lack of enthusiasm. The reasons are ordering:
 Verified, and unrelated to Android:
 
 - the full native session: compositor → shell → apps, on a real ARM64 boot;
+- real input: QMP-injected events travel the guest's evdev → libinput → seat →
+  shell path and open apps, switch apps and close them;
+- real typing: the system on-screen keyboard delivers keystrokes to whichever
+  client holds keyboard focus, verified on a booted VM (`on-screen key 'a'` →
+  `key 38 pressed`) — which is the same path a Waydroid window's text fields
+  would use, but see below;
 - `astrix-apk-manager` exists and is installed, as a UI that shows the
   compatibility surface and does not yet execute anything.
+
+Two prerequisites for running an APK are now genuinely in place, and neither
+is the blocker it used to be. The input story — the hardest part of hosting an
+Android userspace on a Wayland compositor, because Android synthesises its own
+keyboards and expects to own input — is solved for the native case: Astrix has
+a seat that grants keyboard focus unconditionally, and a system keyboard that
+can type into any focused client. The remaining work is containment, not
+input: the unprivileged `android` user exists, the Waydroid image does not, and
+nothing is mounted or started.
 
 If you are reading this to decide whether Astrix can run an APK today: **it
 cannot.**

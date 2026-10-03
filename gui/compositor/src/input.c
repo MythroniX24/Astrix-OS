@@ -557,6 +557,89 @@ static void touch_destroy_handler(struct wl_listener *listener, void *data) {
 
 /* --- keyboard ------------------------------------------------------------ */
 
+/* Defined below, next to the rest of the device registry. */
+static void update_seat_capabilities(struct astrix_server *server);
+/* The three keyboard handlers, defined just below this comment block. */
+static void keyboard_key_handler(struct wl_listener *listener, void *data);
+static void keyboard_modifiers_handler(struct wl_listener *listener, void *data);
+static void keyboard_destroy_handler(struct wl_listener *listener, void *data);
+
+/*
+ * Subscribe to a wlr_keyboard and put it on the seat.
+ *
+ * Two very different things end up here, and the difference is not cosmetic:
+ *
+ *   - a hardware keyboard, discovered by libinput and announced through the
+ *     backend's new_input signal. It owns a wlr_input_device, which is what
+ *     signals its destruction.
+ *
+ *   - a virtual keyboard, created by a client through
+ *     zwp_virtual_keyboard_v1. wlroots 0.18 gives it a wlr_keyboard but never
+ *     registers it with any backend (types/wlr_virtual_keyboard_v1.c: the
+ *     only notification path is wlr_keyboard_notify_key on its own struct,
+ *     and the compositor is expected to hear about it on the manager's
+ *     new_virtual_keyboard signal). So it has no wlr_input_device and
+ *     announces its own death on wlr_keyboard.base.events.destroy.
+ *
+ * The lifetime signal is therefore passed in rather than assumed. Before
+ * this split existed, a virtual keyboard's keys were emitted on a signal
+ * with no listener attached: the on-screen keyboard drew, queued keys, told
+ * wlroots to type them, and wlroots dutifully emitted events into the void.
+ * Nothing crashed, nothing was logged, and not one key ever reached a
+ * client. That was bug 48, and the only reason it stayed hidden is that
+ * every step of that chain is allowed to fail silently.
+ */
+static void attach_keyboard(struct astrix_server *server, struct wlr_keyboard *keyboard,
+                            struct wl_signal *destroy_signal, bool virtual_kb) {
+	struct astrix_keyboard *ak = calloc(1, sizeof(*ak));
+	if (!ak) {
+		astrix_log(WLR_ERROR, "out of memory; ignoring a keyboard");
+		return;
+	}
+	ak->server = server;
+	ak->wlr_keyboard = keyboard;
+	ak->virtual_kb = virtual_kb;
+	wl_list_insert(&server->keyboards, &ak->link);
+	ak->modifiers.notify = keyboard_modifiers_handler;
+	wl_signal_add(&keyboard->events.modifiers, &ak->modifiers);
+	ak->key.notify = keyboard_key_handler;
+	wl_signal_add(&keyboard->events.key, &ak->key);
+	ak->destroy.notify = keyboard_destroy_handler;
+	wl_signal_add(destroy_signal, &ak->destroy);
+
+	/*
+	 * The seat forwards keys to whichever surface holds its keyboard focus,
+	 * through whichever grab is active - not only through the keyboard it
+	 * was handed. So a virtual keyboard's keys reach the focused client
+	 * even when a physical keyboard holds the seat.
+	 *
+	 * It does still need to become the seat's keyboard when there is no
+	 * other one, because that is what makes wlroots send
+	 * wl_keyboard.enter and a keymap at all. On a phone there is normally
+	 * no hardware keyboard, so this is the only path by which the seat ever
+	 * gets one.
+	 */
+	struct wlr_keyboard *seat_kb = wlr_seat_get_keyboard(server->seat);
+	if (!seat_kb) {
+		wlr_seat_set_keyboard(server->seat, keyboard);
+	} else if (virtual_kb) {
+		astrix_log(WLR_INFO, "on-screen keyboard attached; '%s' stays the seat keyboard",
+		           keyboard->base.name ? keyboard->base.name : "?");
+	}
+	update_seat_capabilities(server);
+}
+
+void astrix_input_virtual_keyboard(struct wl_listener *listener, void *data) {
+	struct astrix_server *server = wl_container_of(listener, server, new_virtual_keyboard);
+	struct wlr_virtual_keyboard_v1 *vkbd = data;
+	if (!vkbd || !server->seat) {
+		return;
+	}
+	astrix_log(WLR_INFO, "virtual keyboard created by a client; attaching it");
+	attach_keyboard(server, &vkbd->keyboard, &vkbd->keyboard.base.events.destroy, true);
+	astrix_server_invalidate(server);
+}
+
 static void keyboard_key_handler(struct wl_listener *listener, void *data) {
 	struct astrix_keyboard *ak = wl_container_of(listener, ak, key);
 	/*
@@ -602,14 +685,34 @@ static void keyboard_destroy_handler(struct wl_listener *listener, void *data) {
 	if (wlr_seat_get_keyboard(ak->server->seat) == ak->wlr_keyboard) {
 		wlr_seat_keyboard_notify_clear_focus(ak->server->seat);
 		wlr_seat_set_keyboard(ak->server->seat, NULL);
+		/*
+		 * Hand the seat to another keyboard if one is left. Two devices
+		 * claiming the keyboard is normal on a phone (the internal
+		 * keyboard and a Bluetooth one), and without this the seat would
+		 * stay keyless - so the on-screen keyboard would be the only way
+		 * to type - just because the *first* keyboard was unplugged.
+		 */
+		struct astrix_keyboard *other;
+		wl_list_for_each(other, &ak->server->keyboards, link) {
+			wlr_seat_set_keyboard(ak->server->seat, other->wlr_keyboard);
+			break;
+		}
+		/* Re-assert focus now that the seat has a keyboard again. */
+		astrix_shell_apply_keyboard_focus(ak->server);
 	}
 	/*
 	 * If the last keyboard disappears the seat must stop advertising the
 	 * capability, or clients will wait forever for key events.
+	 *
+	 * A virtual keyboard does not change that decision on its own: it only
+	 * counts while it is still attached, and the physical keyboard that
+	 * granted the capability is unaffected by an on-screen keyboard going
+	 * away.
 	 */
 	if (wl_list_empty(&ak->server->keyboards)) {
 		wlr_seat_set_capabilities(ak->server->seat, 0);
 	}
+	astrix_log(WLR_INFO, "%s keyboard removed", ak->virtual_kb ? "virtual" : "device");
 	free(ak);
 }
 
@@ -643,25 +746,8 @@ static void new_input_handler(struct wl_listener *listener, void *data) {
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD: {
-		struct astrix_keyboard *ak = calloc(1, sizeof(*ak));
-		if (!ak) {
-			return;
-		}
-		ak->server = server;
-		ak->wlr_keyboard = wlr_keyboard_from_input_device(device);
-		wl_list_insert(&server->keyboards, &ak->link);
-		ak->modifiers.notify = keyboard_modifiers_handler;
-		wl_signal_add(&ak->wlr_keyboard->events.modifiers, &ak->modifiers);
-		ak->key.notify = keyboard_key_handler;
-		wl_signal_add(&ak->wlr_keyboard->events.key, &ak->key);
-		ak->destroy.notify = keyboard_destroy_handler;
-		wl_signal_add(&device->events.destroy, &ak->destroy);
-		/*
-		 * The seat only forwards key events for the keyboard it has
-		 * been given. Without this the device is tracked but the client
-		 * never sees a single key.
-		 */
-		wlr_seat_set_keyboard(server->seat, ak->wlr_keyboard);
+		attach_keyboard(server, wlr_keyboard_from_input_device(device), &device->events.destroy,
+		                false);
 		astrix_log(WLR_INFO, "keyboard added: %s", device->name ? device->name : "?");
 		break;
 	}

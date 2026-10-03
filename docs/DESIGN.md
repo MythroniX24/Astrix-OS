@@ -97,6 +97,31 @@ The shell renders on demand, not on a timer. Input, a state change or a timer
 redraws the whole screen into the shm buffer and commits. On a static screen
 this costs nothing, which is most of the time on a phone.
 
+### 3.3 The on-screen keyboard
+
+The keyboard is the shell's, not the compositor's: it is part of the system UI,
+drawn by the shell into its own buffer, and it is dismissed by a `hide` key
+rather than by tapping outside, because there is no outside on a phone.
+
+Design rules, each of which exists because the alternative broke something:
+
+- **It consumes the press, not the tap.** A key takes the event on *press*, so a
+  drag that starts on a key never also becomes a swipe on the screen behind it.
+  A keyboard that leaked taps to the home screen underneath it was the first
+  thing `tests/test-keyboard` caught.
+- **A tap is a character, not a keycode.** `gui/shell/src/keyboard.c` produces a
+  codepoint; `main.c` turns it into an xkb keycode by walking the keymap's level
+  0 and level 1. The layout can therefore be tested without a compositor, and
+  the two halves (what was meant, what is typed) cannot silently diverge.
+- **One-shot shift, not a sticky key.** Shift applies to the next character and
+  releases. Caps lock is separate and explicit.
+- **The keyboard scales with the panel.** Its area is `height/2`, not a constant
+  that happens to fit one QEMU resolution; four panel sizes are asserted in the
+  unit test, including the two target phones.
+- **Empty rows are legal.** The symbol layer leaves the `zxcvbnm` row empty, and
+  the layout code originally divided by that row's length — a SIGFPE, found by
+  the unit test, on a layer nobody had ever run.
+
 ---
 
 ## 4. Application model
