@@ -132,9 +132,10 @@ than a confusing error 180 seconds later.
 | systemd as PID 1 | Verified on a real QEMU boot |
 | Wayland compositor (wlroots 0.18) | Built, and verified running a real client |
 | Astrix Shell (touch UI) | Built, and verified mapping a surface on the compositor |
+| Visual language | Vector icon glyphs (14, drawn as signed distance fields), gradient cards with soft shadows, glass status/navigation bars, depth in the wallpaper. Verified by `test-glyphs` (every glyph must have ink and be centred) and by rendering every screen to `build/screens/` |
 | System on-screen keyboard | **Verified typing**: QWERTY, symbols, shift/caps, space/return/backspace. Keys are delivered through `zwp_virtual_keyboard_v1`, so they reach the focused app instead of stopping at the shell — confirmed on a booted VM (`on-screen key 'a'` → `key 38 pressed`) and on every host test run |
 | Native apps (terminal, files, sysinfo, settings, package manager, APK manager) | Built and installed as ARM64 ELF binaries |
-| Host test suite | 37 tests, all passing |
+| Host test suite | 38 tests, all passing |
 | Android APK execution (Waydroid) | **Not implemented** — see `docs/ANDROID.md` |
 | Physical-device boot | **Not implemented** — no phone has ever been booted. Profiles and a gated flasher exist for the Redmi 8A and moto g64 5G; see `docs/DEVICES.md` |
 

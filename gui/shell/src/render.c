@@ -774,8 +774,14 @@ static void draw_app_switcher(struct astrix_canvas *c, const struct astrix_shell
 			break;
 		}
 		struct astrix_rect card = { x + idx * step, y, card_w, card_h };
-		astrix_fill_rect_rounded(c, card, t->radius, t->surface);
-		astrix_stroke_rect_rounded(c, card, t->radius, 1, t->divider);
+		/* A lifted card, not a bordered rectangle: the shadow is what
+		 * separates the recents stack from the screen behind it. */
+		struct astrix_color card_top = sh->dark_mode ? astrix_rgba(0x1C, 0x22, 0x2F, 0xFF)
+		                                             : astrix_rgba(0xFF, 0xFF, 0xFF, 0xFF);
+		struct astrix_color card_bottom = sh->dark_mode
+		                                      ? astrix_rgba(0x11, 0x15, 0x1E, 0xFF)
+		                                      : astrix_rgba(0xF2, 0xF5, 0xFB, 0xFF);
+		astrix_draw_card(c, card, t->radius, card_top, card_bottom, shadow_color(sh));
 
 		/* Card header: the app's icon tile and name. */
 		struct astrix_rect hdr = { card.x + 14, card.y + 14, card.w - 28, 44 };
@@ -827,10 +833,20 @@ static void draw_keyboard(struct astrix_canvas *c, const struct astrix_shell *sh
 	const struct astrix_theme *t = sh->theme;
 	struct astrix_rect area = astrix_kbd_area(sh->width, sh->height);
 
-	astrix_fill_rect(c, area, astrix_color_with_alpha(t->background, 0xF2));
+	/* The keyboard is a sheet that rises over the app, so it is glass with a
+	 * shadow rather than an opaque slab that hides what you were typing at. */
+	struct astrix_color sheet = sh->dark_mode ? astrix_rgba(0x12, 0x16, 0x20, 0xFF)
+	                                          : astrix_rgba(0xF2, 0xF4, 0xF9, 0xFF);
+	struct astrix_rect sheet_r = { area.x, area.y, area.w, area.h + 12 };
+	astrix_shadow_rounded(c, sheet_r, 0, 18, 5, shadow_color(sh));
+	astrix_fill_glass(c, area, 0, sheet, sh->dark_mode ? 0xF0 : 0xFA);
 
 	struct astrix_kbd_key keys[ASTRIX_KBD_MAX_KEYS];
 	int n = astrix_kbd_layout(sh, sh->width, sh->height, keys, ASTRIX_KBD_MAX_KEYS);
+	int radius = sh->width / 40;
+	if (radius < 6) {
+		radius = 6;
+	}
 	for (int i = 0; i < n; i++) {
 		bool held = sh->kbd_press_x >= 0 &&
 		            astrix_rect_contains(keys[i].rect, sh->kbd_press_x,
@@ -839,14 +855,36 @@ static void draw_keyboard(struct astrix_canvas *c, const struct astrix_shell *sh
 		              keys[i].action == ASTRIX_KBD_SYMBOLS ||
 		              keys[i].action == ASTRIX_KBD_HIDE ||
 		              keys[i].action == ASTRIX_KBD_ENTER;
-		struct astrix_color bg = held ? t->primary
-		                              : (accent ? t->surface_alt : t->surface);
-		astrix_fill_rect_rounded(c, keys[i].rect, 6, bg);
+		bool active = (keys[i].action == ASTRIX_KBD_SHIFT && sh->kbd_shift) ||
+		              (keys[i].action == ASTRIX_KBD_SHIFT && sh->kbd_caps) ||
+		              (keys[i].action == ASTRIX_KBD_SYMBOLS && sh->kbd_symbols);
+		/*
+		 * Keys are cards too. A pressed key gets the accent fill and *no*
+		 * shadow, which is what sells the press: it looks pressed into the
+		 * sheet rather than lit up on top of it.
+		 */
+		if (held) {
+			astrix_fill_rect_rounded(c, keys[i].rect, radius, t->primary);
+		} else {
+			struct astrix_color top = active ? astrix_color_scale(t->primary, 0.72f)
+			                                 : (accent ? t->surface_alt : t->surface);
+			struct astrix_color bottom = active ? astrix_color_scale(t->primary, 0.94f)
+			                                   : astrix_color_scale(
+			                                         accent ? t->surface_alt : t->surface,
+			                                         sh->dark_mode ? 0.78f : 1.06f);
+			astrix_draw_card(c, keys[i].rect, radius, top, bottom, shadow_color(sh));
+		}
 		int tw = astrix_text_width(keys[i].label);
-		astrix_draw_text(c,
-		                 keys[i].rect.x + (keys[i].rect.w - tw) / 2,
-		                 keys[i].rect.y + (keys[i].rect.h - ASTRIX_FONT_H) / 2,
-		                 keys[i].label, t->text);
+		int tx = keys[i].rect.x + (keys[i].rect.w - tw) / 2;
+		int ty = keys[i].rect.y + (keys[i].rect.h - ASTRIX_FONT_H) / 2;
+		struct astrix_color ink = held ? t->on_primary : t->text;
+		/* Labels are bold when the key is active or held: state you can see
+		 * at a glance instead of a colour you have to compare. */
+		if (active || held) {
+			astrix_draw_text_bold(c, tx, ty, keys[i].label, ink);
+		} else {
+			astrix_draw_text(c, tx, ty, keys[i].label, ink);
+		}
 	}
 
 	/* Which layer and which modifier are active, stated rather than implied:
