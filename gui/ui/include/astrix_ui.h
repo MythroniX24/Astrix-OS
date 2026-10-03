@@ -107,6 +107,42 @@ void astrix_clear(struct astrix_canvas *c, struct astrix_color col);
 /* Colour utilities */
 struct astrix_color astrix_color_lerp(struct astrix_color a, struct astrix_color b, float t);
 struct astrix_color astrix_color_with_alpha(struct astrix_color c, uint8_t a);
+struct astrix_color astrix_color_scale(struct astrix_color c, float factor);
+struct astrix_color astrix_color_mix(struct astrix_color a, struct astrix_color b, float t);
+
+/* --- elevation and depth ------------------------------------------------- */
+
+/*
+ * Soft drop shadow.
+ *
+ * The single biggest difference between a flat 2010-era UI and a modern one is
+ * that elements sit *above* their background instead of being stamped into
+ * it, and the cheapest honest way to show that is a shadow. There is no GPU
+ * here and no blur pass, so it is built the way every software rasteriser does
+ * it: `layers` passes of the same rounded rect, each grown by `spread` and
+ * each fainter than the last. Cheap (a few thousand blended pixels), and it
+ * scales with the panel instead of being a fixed 4px.
+ */
+void astrix_shadow_rounded(struct astrix_canvas *c, struct astrix_rect r, int radius,
+                           int spread, int layers, struct astrix_color col);
+
+/* Diagonal gradient, top-left to bottom-right. Used for tiles and wallpaper. */
+void astrix_fill_rect_gradient_diag(struct astrix_canvas *c, struct astrix_rect r,
+                                    struct astrix_color from, struct astrix_color to);
+
+/* Rounded rect with a vertical gradient and a soft shadow: the "card". */
+void astrix_draw_card(struct astrix_canvas *c, struct astrix_rect r, int radius,
+                      struct astrix_color top, struct astrix_color bottom,
+                      struct astrix_color shadow);
+
+/*
+ * Frosted surface: a translucent fill plus a single bright hairline along the
+ * top edge. This is the cheap approximation of backdrop blur that every modern
+ * mobile UI fakes, and it reads as glass because the highlight is what the eye
+ * actually uses to judge a material.
+ */
+void astrix_fill_glass(struct astrix_canvas *c, struct astrix_rect r, int radius,
+                       struct astrix_color tint, uint8_t alpha);
 
 /* --- text ---------------------------------------------------------------- */
 
@@ -126,6 +162,58 @@ int astrix_draw_text(struct astrix_canvas *c, int x, int y, const char *utf8,
 /* Draws text centred horizontally within `r`. Returns the drawn width. */
 int astrix_draw_text_centered(struct astrix_canvas *c, struct astrix_rect r, int baseline_y,
                               const char *utf8, struct astrix_color col);
+
+/*
+ * Bold text. The built-in bitmap font has one weight, and "draw it twice" is
+ * the honest way to get a second one without shipping a second font - which is
+ * what a 6x11 pixel face needs anyway, because a real bold weight at that size
+ * turns to mud. Returns the advance, which is unchanged.
+ */
+int astrix_draw_text_bold(struct astrix_canvas *c, int x, int y, const char *utf8,
+                          struct astrix_color col);
+
+/* Extra pixels between glyphs. Uppercase labels read far better tracked. */
+int astrix_draw_text_tracked(struct astrix_canvas *c, int x, int y, const char *utf8,
+                             struct astrix_color col, int tracking);
+int astrix_text_width_tracked(const char *utf8, int tracking);
+
+/* --- glyphs -------------------------------------------------------------- */
+
+/*
+ * Icons, drawn as vectors.
+ *
+ * These are not a substitute for a real icon theme (which needs a freetype
+ * pipeline and asset files this OS deliberately does not ship at boot), but a
+ * letter in a coloured square reads as an unfinished build, and a recognisable
+ * shape reads as an OS. Every glyph is scale-independent and uses the same
+ * alpha-blended primitives as everything else.
+ */
+enum astrix_glyph {
+	ASTRIX_GLYPH_HOME,
+	ASTRIX_GLYPH_FOLDER,
+	ASTRIX_GLYPH_TERMINAL,
+	ASTRIX_GLYPH_SETTINGS,
+	ASTRIX_GLYPH_STORE,
+	ASTRIX_GLYPH_ANDROID,
+	ASTRIX_GLYPH_INFO,
+	ASTRIX_GLYPH_GRID,
+	ASTRIX_GLYPH_BACK,
+	ASTRIX_GLYPH_POWER,
+	ASTRIX_GLYPH_BATTERY,
+	ASTRIX_GLYPH_WIFI,
+	ASTRIX_GLYPH_KEYBOARD,
+	ASTRIX_GLYPH_CLOSE,
+	ASTRIX_GLYPH_SEARCH,
+	ASTRIX_GLYPH_MOON,
+	ASTRIX_GLYPH_GLOBE,
+	ASTRIX_GLYPH_MEMORY,
+	ASTRIX_GLYPH_CHECK,
+	ASTRIX_GLYPH_COUNT,
+};
+
+/* Draws `g` centred in `r` at its natural size (roughly r's smaller side). */
+void astrix_draw_glyph(struct astrix_canvas *c, struct astrix_rect r, enum astrix_glyph g,
+                       struct astrix_color col);
 /* Truncates into `out` adding an ellipsis so the result fits `max_w` pixels. */
 void astrix_text_ellipsize(const char *utf8, int max_w, char *out, size_t out_size);
 /* Greedy UTF-8 safe word wrap; returns the number of lines written. */

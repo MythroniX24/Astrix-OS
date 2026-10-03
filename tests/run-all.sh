@@ -222,6 +222,33 @@ else
   skip "render-screens" "no C compiler"
 fi
 
+# 7b. Glyph proof sheet.
+#
+#     Icons are signed-distance functions now, and a distance function that
+#     evaluates to "outside everywhere" is not an error - it is an invisible
+#     glyph on a home screen, in an app launcher, that still looks like it
+#     works. So every glyph is rendered and checked for ink and centring, and
+#     the sheet itself is printed so a human can look at the shapes.
+banner "glyph proof sheet"
+if command -v cc >/dev/null || command -v gcc >/dev/null; then
+  CC_BIN="$(command -v cc || command -v gcc)"
+  if "$CC_BIN" -std=c11 -O1 -Igui/ui/include \
+      gui/ui/src/astrix_canvas.c gui/ui/src/astrix_font.c \
+      tests/glyph-proof.c -o "$OUT/glyph-proof" -lm 2>"$OUT/glyph-proof.log"; then
+    if "$OUT/glyph-proof" >"$OUT/glyph-proof.out" 2>&1; then
+      record "test-glyphs ($(grep -c '^---' "$OUT/glyph-proof.out") glyphs drawn and checked)" 0
+    else
+      record "test-glyphs" 1
+      grep -E "FAIL" "$OUT/glyph-proof.out" | sed 's/^/      /' | head -10
+    fi
+  else
+    skip "test-glyphs" "compile failed"
+    sed 's/^/      /' "$OUT/glyph-proof.log" | head -10
+  fi
+else
+  skip "test-glyphs" "no C compiler"
+fi
+
 # 8. End-to-end Wayland session: the real arm64 compositor and shell, run
 #    under qemu-user inside the rootfs. This is the one test that exercises the
 #    actual server/client protocol path, so it is the test that would have

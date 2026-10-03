@@ -68,60 +68,144 @@ static struct astrix_rect cell_rect(const struct grid *g, int index) {
 static int g_cell_label_width(int cell_w) {
 	int avail = cell_w - 12;
 	return avail > 0 ? avail : 1;
-}
-
-/* Colour derived from an app id, so each app is visually stable and distinct. */
+}/* Colour derived from an app id, so each app is visually stable and distinct. */
 static struct astrix_color app_color(const struct astrix_app *app) {
 	unsigned h = 5381;
 	for (const char *p = app->id; *p; p++) {
 		h = h * 33 + (unsigned char)*p;
 	}
 	return (struct astrix_color){ (uint8_t)(80 + h % 120), (uint8_t)(80 + (h >> 8) % 120),
-		                          (uint8_t)(110 + (h >> 16) % 110), 0xFF };
+	                          (uint8_t)(110 + (h >> 16) % 110), 0xFF };
+}
+
+/*
+ * Which icon an app gets.
+ *
+ * A letter in a coloured square is the universal "this build is unfinished"
+ * signal, and it is what every launcher looks like before anyone draws
+ * anything. The set below is small and deliberate: an icon you recognise at a
+ * glance beats a letter you have to read. Unknown apps fall back to the grid,
+ * which is honest - it means "we have no icon for this", not "this is a
+ * picture of a folder".
+ */
+static enum astrix_glyph app_glyph(const struct astrix_app *app) {
+	const char *id = app->id ? app->id : "";
+	const char *name = app->name ? app->name : "";
+	if (strstr(id, "files") || strstr(name, "Files")) {
+		return ASTRIX_GLYPH_FOLDER;
+	}
+	if (strstr(id, "terminal") || strstr(name, "Terminal")) {
+		return ASTRIX_GLYPH_TERMINAL;
+	}
+	if (strstr(id, "settings") || strstr(name, "Settings")) {
+		return ASTRIX_GLYPH_SETTINGS;
+	}
+	if (strstr(id, "package-manager") || strstr(id, "package_manager") ||
+	    strstr(name, "App Store")) {
+		return ASTRIX_GLYPH_STORE;
+	}
+	if (strstr(id, "apk") || strstr(name, "Android")) {
+		return ASTRIX_GLYPH_ANDROID;
+	}
+	if (strstr(id, "sysinfo") || strstr(name, "System Info")) {
+		return ASTRIX_GLYPH_INFO;
+	}
+	return ASTRIX_GLYPH_GRID;
+}
+
+/* Two-stop accent per app, so a tile has a light source rather than a fill. */
+static void app_gradient(const struct astrix_app *app, struct astrix_color *top,
+                         struct astrix_color *bottom) {
+	struct astrix_color base = app_color(app);
+	/*
+	 * The gradient is deliberately kept in the middle of the range. The
+	 * original 1.35x/0.72x spread produced tiles light enough that a white
+	 * glyph on them was measurably lower contrast than the label underneath,
+	 * which is the one thing an icon must never be.
+	 */
+	*top = astrix_color_scale(base, 1.18f);
+	*bottom = astrix_color_scale(base, 0.62f);
+}
+
+/*
+ * Glyph colour that adapts to the tile it sits on.
+ *
+ * Icons are derived from a hash of the app id, so some are unavoidably light.
+ * A fixed white glyph on a light tile disappears; the fix is not to hand-pick
+ * nicer colours but to pick the ink from the tile's own luminance.
+ */
+static struct astrix_color icon_ink(const struct astrix_app *app) {
+	struct astrix_color top, bottom;
+	app_gradient(app, &top, &bottom);
+	int lum = (top.r * 299 + top.g * 587 + top.b * 114) / 1000;
+	if (lum > 150) {
+		return astrix_rgba(0x14, 0x18, 0x24, 0xFF);
+	}
+	return astrix_rgba(0xFF, 0xFF, 0xFF, 0xFA);
+}
+
+/* Soft shadow colour for the current theme. */
+static struct astrix_color shadow_color(const struct astrix_shell *sh) {
+	return sh->dark_mode ? astrix_rgba(0x00, 0x00, 0x00, 0x8C)
+	                     : astrix_rgba(0x24, 0x2C, 0x40, 0x3C);
 }
 
 /* Draws a small icon tile plus the app's name. Used by the switcher cards. */
 static void draw_app_header(struct astrix_canvas *c, const struct astrix_shell *sh,
                             struct astrix_rect r, const struct astrix_app *app) {
-	const struct astrix_theme *t = sh->theme;
 	int size = r.h;
-	astrix_fill_rect_rounded(c, (struct astrix_rect){ r.x, r.y, size, size }, size / 4,
-	                         app_color(app));
-	char initial[2] = { app->name[0] ? app->name[0] : '?', 0 };
-	int iw = astrix_text_width(initial);
-	astrix_draw_text(c, r.x + (size - iw) / 2, r.y + (size - ASTRIX_FONT_H) / 2, initial,
-	                 t->on_primary);
+	struct astrix_rect ir = { r.x, r.y, size, size };
+	struct astrix_color top, bottom;
+	app_gradient(app, &top, &bottom);
+	astrix_draw_card(c, ir, size / 4, top, bottom, shadow_color(sh));
+	astrix_draw_glyph(c, (struct astrix_rect){ ir.x, ir.y, ir.w, ir.h }, app_glyph(app),
+	                  icon_ink(app));
 
 	char label[ASTRIX_APP_NAME_LEN];
 	astrix_text_ellipsize(app->name, r.w - size - 10, label, sizeof(label));
-	astrix_draw_text(c, r.x + size + 10, r.y + (size - ASTRIX_FONT_H) / 2, label, t->text);
+	astrix_draw_text(c, r.x + size + 10, r.y + (size - ASTRIX_FONT_H) / 2, label,
+	                 sh->theme->text);
 }
 
 /*
- * App icons. With no icon theme installed in the QEMU milestone, an icon is
- * drawn as a rounded tile with the app's initial(s) - a real, deterministic
- * rendering, and clearly a placeholder rather than a fake icon asset.
+ * App icons: a gradient tile lifted off the wallpaper by a soft shadow, a
+ * vector glyph, and a label with a shadow of its own so it stays readable
+ * over any wallpaper. The tile's geometry is unchanged from the flat version
+ * - only its painting changed - so every hit-test in input.c still lines up.
  */
 static void draw_app_icon(struct astrix_canvas *c, const struct astrix_shell *sh,
                           struct astrix_rect r, const struct astrix_app *app) {
 	const struct astrix_theme *t = sh->theme;
-	struct astrix_color base = app_color(app);
 
 	int icon = r.w < r.h ? r.w : r.h;
 	struct astrix_rect ir = { r.x + (r.w - icon) / 2, r.y + (icon > 56 ? 6 : 0), icon, icon };
-	astrix_fill_rect_rounded(c, ir, icon / 4, base);
 
-	/* Initial letter, centred. */
-	char initial[2] = { (app->name[0] ? app->name[0] : '?'), 0 };
-	int tw = astrix_text_width(initial);
-	astrix_draw_text(c, ir.x + (icon - tw) / 2, ir.y + (icon - ASTRIX_FONT_H) / 2, initial,
-	                 t->on_primary);
+	/* Squircle-ish tile: a generous radius reads as modern, a small one as 2012. */
+	struct astrix_color top, bottom;
+	app_gradient(app, &top, &bottom);
+	astrix_draw_card(c, ir, icon / 3, top, bottom, shadow_color(sh));
 
-	/* Label under the icon. */
+	/* A specular highlight along the top third, which is what makes a flat
+	 * gradient look like a physical object. */
+	astrix_fill_rect(c, (struct astrix_rect){ ir.x + icon / 8, ir.y + 2, icon * 3 / 4, 1 },
+	                 astrix_color_with_alpha(astrix_rgba(0xFF, 0xFF, 0xFF, 0xFF), 0x50));
+
+	int glyph = icon * 3 / 5;
+	struct astrix_color ink = icon_ink(app);
+	astrix_draw_glyph(c, (struct astrix_rect){ ir.x + (icon - glyph) / 2,
+	                                            ir.y + (icon - glyph) / 2, glyph, glyph },
+	                  app_glyph(app), ink);
+
+	/* Label under the icon, with its own drop shadow: text over a photo is
+	 * the classic legibility failure and the fix is not "pick a nicer colour". */
 	char label[ASTRIX_APP_NAME_LEN];
 	astrix_text_ellipsize(app->name, g_cell_label_width(r.w), label, sizeof(label));
 	int lw = astrix_text_width(label);
-	astrix_draw_text(c, r.x + (r.w - lw) / 2, ir.y + icon + 6, label, t->text);
+	int lx = r.x + (r.w - lw) / 2;
+	int ly = ir.y + icon + 6;
+	astrix_draw_text(c, lx, ly + 1, label, sh->dark_mode ? astrix_rgba(0x00, 0x00, 0x00, 0x99)
+	                                                    : astrix_rgba(0xFF, 0xFF, 0xFF, 0xCC));
+	astrix_draw_text(c, lx, ly, label, t->text);
 }
 
 /* --- status bar ---------------------------------------------------------- */
@@ -133,29 +217,36 @@ static void draw_status_bar(struct astrix_canvas *c, const struct astrix_shell *
 
 	/* The bar sits over whatever is behind it, so a subtle scrim keeps the
 	 * clock legible on a light wallpaper. */
-	astrix_fill_rect(c, r, astrix_color_with_alpha(t->background, 0xE0));
+	/* A translucent bar over the wallpaper rather than a flat slab: the
+	 * status bar is glass on every phone OS, and it keeps the wallpaper
+	 * visible where it matters. */
+	astrix_fill_glass(c, r, 0, sh->dark_mode ? astrix_rgba(0x0A, 0x0D, 0x16, 0xFF)
+	                                          : astrix_rgba(0xF7, 0xF9, 0xFF, 0xFF),
+	                  sh->dark_mode ? 0xC4 : 0xE6);
 
 	int pad = 12;
 	int y = (h - ASTRIX_FONT_H) / 2;
 
-	/* Left: time. A phone leads with the clock. */
-	astrix_draw_text(c, pad, y, sh->status_time, t->text);
+	/* Left: time. A phone leads with the clock, and it is the one label that
+	 * earns weight - bold at this size, regular everywhere else. */
+	astrix_draw_text_bold(c, pad, y, sh->status_time, t->text);
 
 	/* The keyboard button, immediately right of the clock. Its geometry is
 	 * shared with the hit-test in input.c via astrix_kbd_toggle_rect(), so
 	 * the thing drawn and the thing tappable cannot drift apart. */
 	struct astrix_rect kbtn = astrix_kbd_toggle_rect(sh);
-	struct astrix_color kb_col = sh->kbd_visible ? t->primary : t->text_dim;
-	astrix_stroke_rect_rounded(c, kbtn, 4, 1, kb_col);
-	/* A little keyboard glyph: three ticks over a bar. */
-	int kx = kbtn.x + 5, ky = kbtn.y + 5;
-	for (int i = 0; i < 3; i++) {
-		astrix_fill_rect(c, (struct astrix_rect){ kx + i * 5, ky, 3, 3 }, kb_col);
+	struct astrix_color kb_col = sh->kbd_visible ? t->on_primary : t->text_dim;
+	if (sh->kbd_visible) {
+		/* Active: a filled accent chip, so "the keyboard is open" is
+		 * visible at a glance instead of having to read a border. */
+		astrix_fill_rect_rounded(c, kbtn, kbtn.h / 2, t->primary);
+	} else {
+		astrix_fill_rect_rounded(c, kbtn, kbtn.h / 2,
+		                         astrix_color_with_alpha(t->surface_alt, 0x90));
 	}
-	astrix_fill_rect(c,
-	                 (struct astrix_rect){ kx, kbtn.y + kbtn.h - 7,
-	                                       kbtn.w - 10, 2 },
-	                 kb_col);
+	int kg = kbtn.h - 10;
+	astrix_draw_glyph(c, (struct astrix_rect){ kbtn.x + 5, kbtn.y + 5, kg, kg },
+	                  ASTRIX_GLYPH_KEYBOARD, kb_col);
 
 	/* Right: status glyphs, right-aligned and packed from the edge. */
 	int x = sh->width - pad;
@@ -241,32 +332,113 @@ static void draw_nav_bar(struct astrix_canvas *c, const struct astrix_shell *sh)
 	const struct astrix_theme *t = sh->theme;
 	int h = t->navbar_h;
 	int y = sh->height - h;
-	astrix_fill_rect(c, (struct astrix_rect){ 0, y, sh->width, h },
-	                 astrix_color_with_alpha(t->background, 0xE0));
+	/*
+	 * A floating pill rather than a full-width slab. This is the single
+	 * cheapest upgrade to a phone UI: the bar stops being a band of flat
+	 * colour across the bottom of the screen and becomes an object sitting
+	 * on top of the wallpaper.
+	 */
+	int inset = sh->width / 14;
+	if (inset < 10) {
+		inset = 10;
+	}
+	struct astrix_rect bar = { inset, y + h / 5, sh->width - 2 * inset, h - h / 5 - 4 };
+	struct astrix_color tint = sh->dark_mode ? astrix_rgba(0x14, 0x18, 0x24, 0xFF)
+	                                          : astrix_rgba(0xFF, 0xFF, 0xFF, 0xFF);
+	astrix_shadow_rounded(c, bar, bar.h / 2, bar.h / 3, 5, shadow_color(sh));
+	astrix_fill_glass(c, bar, bar.h / 2, tint, sh->dark_mode ? 0xB4 : 0xD8);
 
 	/* Gesture pill: the phone's home affordance. */
-	int pill_w = 108, pill_h = 4;
+	int pill_w = bar.w / 3;
+	int pill_h = 4;
 	astrix_fill_rect_rounded(c,
 	                         (struct astrix_rect){ (sh->width - pill_w) / 2,
-	                                               y + h - 14, pill_w, pill_h },
-	                         pill_h / 2, t->text_dim);
+	                                               bar.y + bar.h - 14, pill_w, pill_h },
+	                         pill_h / 2,
+	                         astrix_color_with_alpha(t->text, sh->dark_mode ? 0xB0 : 0x99));
 }
 
 /* --- home screen --------------------------------------------------------- */
 
+/*
+ * One soft radial bloom: a filled ellipse whose alpha falls off from the
+ * centre. One pass over its own rows, with each row's span taken from the
+ * ellipse equation, so the cost is the ellipse's area rather than area times
+ * the number of steps - which is the difference between a wallpaper that
+ * costs 40ms on a software rasteriser and one that costs 4ms.
+ */
+static void astrix_bloom(struct astrix_canvas *c, struct astrix_rect bounds, int cx, int cy,
+                         int rx, int ry, struct astrix_color col, uint8_t max_alpha) {
+	if (!c || !c->pixels || max_alpha == 0 || rx <= 0 || ry <= 0) {
+		return;
+	}
+	for (int y = 0; y < bounds.h; y++) {
+		int dy = (bounds.y + y) - cy;
+		float ny = (float)dy / (float)ry;
+		if (ny <= -1.0f || ny >= 1.0f) {
+			continue;
+		}
+		float k = 1.0f - ny * ny;
+		int hw = (int)((float)rx * sqrtf(k));
+		int x0 = cx - hw, x1 = cx + hw;
+		if (x0 < bounds.x) {
+			x0 = bounds.x;
+		}
+		if (x1 > bounds.x + bounds.w) {
+			x1 = bounds.x + bounds.w;
+		}
+		if (x1 <= x0) {
+			continue;
+		}
+		/* Ease the falloff so the centre is bright and the rim is invisible;
+		 * a linear ramp reads as a visible disc edge. */
+		float f = 1.0f - fabsf(ny);
+		f = f * f;
+		struct astrix_color cc = astrix_color_with_alpha(col, (uint8_t)((float)max_alpha * f));
+		astrix_fill_rect(c, (struct astrix_rect){ x0, bounds.y + y, x1 - x0, 1 }, cc);
+	}
+}
+
 static void draw_wallpaper(struct astrix_canvas *c, const struct astrix_shell *sh) {
-	const struct astrix_theme *t = sh->theme;
 	/*
 	 * A deterministic vertical gradient derived from the theme. Real OSes
 	 * ship wallpaper images; until then this is a plain, honest fill rather
 	 * than a fake photograph.
 	 */
-	struct astrix_color top = sh->dark_mode ? astrix_rgba(0x14, 0x1B, 0x3A, 0xFF)
-	                                        : astrix_rgba(0xDD, 0xE6, 0xFF, 0xFF);
-	struct astrix_color bottom = sh->dark_mode ? astrix_rgba(0x08, 0x0B, 0x14, 0xFF)
-	                                           : astrix_rgba(0xF6, 0xF2, 0xEA, 0xFF);
-	astrix_fill_rect_gradient_v(c, (struct astrix_rect){ 0, 0, sh->width, sh->height }, top,
-	                            bottom);
+	struct astrix_color top = sh->dark_mode ? astrix_rgba(0x1A, 0x22, 0x4A, 0xFF)
+	                                        : astrix_rgba(0xD8, 0xE2, 0xFF, 0xFF);
+	struct astrix_color bottom = sh->dark_mode ? astrix_rgba(0x05, 0x07, 0x0E, 0xFF)
+	                                           : astrix_rgba(0xF7, 0xF1, 0xE8, 0xFF);
+	struct astrix_rect full = { 0, 0, sh->width, sh->height };
+	astrix_fill_rect_gradient_v(c, full, top, bottom);
+
+	/*
+	 * Two soft accent blooms over the base ramp. A single linear gradient
+	 * reads as "a gradient"; a gradient with light falling into it from two
+	 * corners reads as a photograph, and that difference is most of why a
+	 * modern wallpaper looks modern. Drawn as huge low-alpha ellipses
+	 * rather than a bitmap, so it costs nothing to ship and nothing to load.
+	 */
+	struct astrix_color glow_a = sh->dark_mode ? astrix_rgba(0x5C, 0x7C, 0xFF, 0xFF)
+	                                           : astrix_rgba(0xFF, 0xA8, 0x54, 0xFF);
+	struct astrix_color glow_b = sh->dark_mode ? astrix_rgba(0x9B, 0x4D, 0xD8, 0xFF)
+	                                           : astrix_rgba(0x4A, 0xB4, 0xFF, 0xFF);
+
+	/*
+	 * Two accent blooms over the base ramp. A single linear gradient reads as
+	 * "a gradient"; light falling into it from two corners reads as depth.
+	 *
+	 * Cost matters here: this is a software rasteriser on a phone GPU we do
+	 * not yet have. Each bloom is one pass over its own rows, with the span
+	 * for a row taken straight from the ellipse equation - so the price is
+	 * the area of the ellipse (a few hundred thousand blended pixels at
+	 * 1024x768), not area times steps.
+	 */
+	struct astrix_rect bloom = { 0, 0, sh->width, sh->height };
+	astrix_bloom(c, bloom, sh->width / 3, sh->height / 5, sh->width / 3, sh->height / 4,
+	             glow_a, sh->dark_mode ? 0x66 : 0x70);
+	astrix_bloom(c, bloom, (sh->width * 5) / 6, (sh->height * 4) / 5, sh->width / 3,
+	             sh->height / 4, glow_b, sh->dark_mode ? 0x54 : 0x62);
 }
 
 static void draw_home(struct astrix_canvas *c, const struct astrix_shell *sh) {
