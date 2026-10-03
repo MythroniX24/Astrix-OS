@@ -10,10 +10,11 @@
 # destructive path is hard to reach by accident:
 #
 #   1. It refuses to run at all for any profile whose DEVICE_BOOT_STATUS is
-#      not "supported". Both target phones are currently "unsupported", so
-#      today this script will not flash either of them - which is correct.
-#      Flashing a phone with a kernel that has no display driver is how you
-#      get a device that only boots to a black screen over USB.
+#      not "supported", unless ASTRIX_ALLOW_UNVERIFIED_FLASH=1 is set. Both
+#      target phones are currently "unsupported", so today this script will not
+#      flash either of them - which is correct. Flashing a phone with a kernel
+#      that has no display driver is how you get a device that only boots to a
+#      black screen over USB.
 #   2. It refuses to flash a device whose bootloader is locked, because
 #      fastboot flash on a locked bootloader either fails or, worse, succeeds
 #      in ways the vendor did not intend.
@@ -21,6 +22,19 @@
 #      device codename.
 #   4. --dry-run is the default shape of the output: every fastboot command is
 #      printed, with the real arguments, before anything is sent.
+#
+# THE OVERRIDE
+#   ASTRIX_ALLOW_UNVERIFIED_FLASH=1 gets past gate 1 for a device nobody has
+#   booted. It exists because "flashed and watched it fail" is how a port gets
+#   started, and refusing every attempt makes that impossible - but it is an
+#   environment variable with a name nobody can misread, and the default is
+#   still to refuse. tests/test-devices.sh asserts both halves: without the
+#   variable this script refuses, and with it the refusal is gone. A safety
+#   gate that cannot be opened is not a gate, and one that opens by accident is
+#   not a gate either.
+#
+# What the override does NOT do is turn an unsupported device into a supported
+# one. The profile still says unsupported; only this script's gate changes.
 #
 # The failure mode this is defending against is a phone that no longer boots.
 # That risk is not recoverable by us, so the safe path is the only path.
@@ -85,25 +99,48 @@ printf '  Unlock:  %s\n\n' "${DEVICE_BOOTLOADER_UNLOCK}"
 # Gate 1: has anyone actually booted this?
 # ---------------------------------------------------------------------------
 if [ "${DEVICE_BOOT_STATUS}" != "supported" ] || [ "${DEVICE_VERIFIED_BOOT}" != "yes" ]; then
-  err "Refusing to flash: this device is not supported by Astrix."
-  printf '\n'
-  dim "  status=${DEVICE_BOOT_STATUS} verified-boot=${DEVICE_VERIFIED_BOOT}"
-  dim "  Nothing in this repository has booted on this hardware. Flashing it now"
-  dim "  would very likely leave a phone that shows nothing."
-  if [ -n "${DEVICE_BOOT_BLOCKERS:-}" ]; then
+  if [ "${ASTRIX_ALLOW_UNVERIFIED_FLASH:-0}" = "1" ]; then
+    # The override has to be loud every single time, not once at the top of a
+    # log the user has scrolled past.
     printf '\n'
-    dim "  What is actually blocking it:"
-    printf '%s\n' "${DEVICE_BOOT_BLOCKERS}" | tr ',' '\n' | sed 's/^/    - /'
-  fi
-  if [ -n "${DEVICE_PORT_STEPS:-}" ]; then
+    warn "ASTRIX_ALLOW_UNVERIFIED_FLASH=1 - flashing UNVERIFIED hardware."
     printf '\n'
-    dim "  The path to a boot, in order:"
-    printf '%s\n' "${DEVICE_PORT_STEPS}" | tr ',' '\n' | sed 's/^/    /'
+    dim "  ${DEVICE_NAME} has never booted Astrix. status=${DEVICE_BOOT_STATUS}"
+    dim "  verified-boot=${DEVICE_VERIFIED_BOOT}"
+    dim "  A successful flash here is not a successful boot. It proves the write"
+    dim "  landed; whether the kernel runs is read off the serial console."
+  else
+    err "Refusing to flash: this device is not supported by Astrix."
+    printf '\n'
+    dim "  status=${DEVICE_BOOT_STATUS} verified-boot=${DEVICE_VERIFIED_BOOT}"
+    dim "  Nothing in this repository has booted on this hardware. Flashing it now"
+    dim "  would very likely leave a phone that shows nothing."
+    if [ -n "${DEVICE_BOOT_BLOCKERS:-}" ]; then
+      printf '\n'
+      dim "  What is actually blocking it:"
+      printf '%s\n' "${DEVICE_BOOT_BLOCKERS}" | tr ',' '\n' | sed 's/^/    - /'
+    fi
+    if [ -n "${DEVICE_TEST_ROUTES:-}" ]; then
+      printf '\n'
+      dim "  What IS possible on this device:"
+      printf '%s\n' "${DEVICE_TEST_ROUTES}" | tr ',' '\n' | sed 's/^/    /'
+    fi
+    if [ -n "${DEVICE_PORT_STEPS:-}" ]; then
+      printf '\n'
+      dim "  The path to a boot, in order:"
+      printf '%s\n' "${DEVICE_PORT_STEPS}" | tr ',' '\n' | sed 's/^/    /'
+    fi
+    printf '\n'
+    dim "  ./scripts/device.sh show ${DEVICE}   for the full picture"
+    if [ -f "${SCRIPT_DIR}/port-${DEVICE}.sh" ]; then
+      dim "  ./scripts/port-${DEVICE}.sh status   for the device-specific routes"
+    fi
+    printf '\n'
+    dim "  To flash anyway, with the full warning above:"
+    dim "    ASTRIX_ALLOW_UNVERIFIED_FLASH=1 ${0} ${DEVICE} --flash"
+    printf '\n'
+    exit 2
   fi
-  printf '\n'
-  dim "  ./scripts/device.sh show ${DEVICE}   for the full picture"
-  printf '\n'
-  exit 2
 fi
 
 # ---------------------------------------------------------------------------

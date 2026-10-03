@@ -151,6 +151,44 @@ else
   else
     warn "the refusal does not explain itself"
   fi
+
+  # -------------------------------------------------------------------------
+  # ...and that it stops refusing only when told to, loudly.
+  #
+  # A gate that cannot be opened is not a gate: nobody ever learns whether a
+  # kernel boots by refusing to try. So ASTRIX_ALLOW_UNVERIFIED_FLASH=1 has to
+  # get past the same check, and it has to say loudly that it is doing so. Both
+  # halves are asserted here, because a safety gate that opens silently is
+  # worse than one that never opens.
+  # -------------------------------------------------------------------------
+  out="$(ASTRIX_ALLOW_UNVERIFIED_FLASH=1 bash scripts/flash-device.sh "${UNSUPPORTED}" --flash 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    err "the override did not get past gate 1 (still exit 2)"
+    err "the gate must be openable, or no port can ever be started"
+    FAILED=$((FAILED + 1))
+  else
+    pass "ASTRIX_ALLOW_UNVERIFIED_FLASH=1 gets past the boot-status gate"
+  fi
+  if printf '%s' "$out" | grep -q "UNVERIFIED"; then
+    pass "the override says out loud that it is flashing unverified hardware"
+  else
+    err "the override flashes without warning; that is how a phone gets lost"
+    FAILED=$((FAILED + 1))
+  fi
+  if printf '%s' "$out" | grep -q "ASTRIX_ALLOW_UNVERIFIED_FLASH"; then
+    pass "it names the variable that did it, so it can be found in a shell history"
+  else
+    warn "the override does not name the variable it is acting on"
+  fi
+  # Reaching the fastboot stage without a phone must fail there and nowhere
+  # earlier: if it fails on "fastboot not found" that is fine, but it must not
+  # have printed a flash plan.
+  if printf '%s' "$out" | grep -q "Commands:"; then
+    err "it printed flash commands for an unbooted device"
+    FAILED=$((FAILED + 1))
+  else
+    pass "still no flash command was emitted"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -183,6 +221,143 @@ else
     pass "no bundle was written to disk"
   fi
 fi
+
+# ---------------------------------------------------------------------------
+printf '\n'
+banner_msg="the per-device port tool exists, and its gates hold"
+printf '  %s\n' "$banner_msg"
+# A device that has a profile but no way to make progress is a dead end with
+# documentation. The port script is the other half of the promise: it must
+# exist, it must explain the two routes, and it must refuse to flash without
+# the same explicit override everything else uses.
+PORT="scripts/port-redmi-8a.sh"
+if [ ! -x "$PORT" ]; then
+  err "no executable ${PORT}"
+  dim "  docs/REDMI-8A.md points readers at it; it has to exist"
+  FAILED=$((FAILED + 1))
+else
+  pass "${PORT} exists and is executable"
+
+  if bash -n "$PORT" 2>/dev/null; then
+    pass "it parses"
+  else
+    err "it does not parse"
+    FAILED=$((FAILED + 1))
+  fi
+
+  out="$(bash "$PORT" status 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    err "'status' exited ${rc}"
+    FAILED=$((FAILED + 1))
+  else
+    pass "'status' runs and reports"
+  fi
+  # The whole point of the script is that it names the two routes and is
+  # explicit about what each one proves. Copy that loses and the page becomes
+  # another promise nobody checked.
+  for want in "android-host" "boot-test" "Adreno 505"; do
+    if printf '%s' "$out" | grep -q "$want"; then
+      pass "status mentions '${want}'"
+    else
+      err "status does not mention '${want}'"
+      FAILED=$((FAILED + 1))
+    fi
+  done
+  if printf '%s' "$out" | grep -qi "does not prove"; then
+    pass "status says what the routes do NOT prove"
+  else
+    err "status never says what a route fails to prove"
+    dim "  that omission is exactly how a port ends up oversold"
+    FAILED=$((FAILED + 1))
+  fi
+
+  # The flash gate, on the device-specific path.
+  out="$(bash "$PORT" boot-test stage 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    err "boot-test stage exited 0 with no override"
+    FAILED=$((FAILED + 1))
+  else
+    pass "boot-test stage refuses without the override (exit ${rc})"
+  fi
+  if printf '%s' "$out" | grep -q "ASTRIX_ALLOW_UNVERIFIED_FLASH"; then
+    pass "it names the variable that unlocks it"
+  else
+    err "the refusal does not say how to proceed"
+    FAILED=$((FAILED + 1))
+  fi
+
+  # With the override it must get past consent and stop at the missing phone,
+  # which is the only honest place for it to stop.
+  out="$(ASTRIX_ALLOW_UNVERIFIED_FLASH=1 bash "$PORT" boot-test stage 2>&1)" && rc=0 || rc=$?
+  if printf '%s' "$out" | grep -qi "refusing"; then
+    err "the override did not get past the consent gate"
+    FAILED=$((FAILED + 1))
+  else
+    pass "the override gets past the consent gate"
+  fi
+  if printf '%s' "$out" | grep -qi "unverified"; then
+    pass "it says out loud that the image is unverified"
+  else
+    err "the override flashes without warning"
+    FAILED=$((FAILED + 1))
+  fi
+  if printf '%s' "$out" | grep -qiE "no boot image|no phone in fastboot|fastboot not found"; then
+    pass "it then stops for a real, explicable reason (exit ${rc})"
+  else
+    err "after the override it failed for an unexplained reason"
+    printf '%s\n' "$out" | sed 's/^/      /' | head -10
+    FAILED=$((FAILED + 1))
+  fi
+
+  # build must never report success for an image it did not write. abootimg
+  # leaves a zero-length file behind when it gives up, and a script that does
+  # not look would print "ok" over nothing - which is how a phone ends up with
+  # an unbootable boot partition and a green build log.
+  out="$(bash "$PORT" boot-test build 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    if printf '%s' "$out" | grep -q "valid Android boot image" ||
+       printf '%s' "$out" | grep -q "from the stock header"; then
+      pass "boot-test build validated the image it wrote"
+    else
+      err "boot-test build exited 0 without validating the image"
+      FAILED=$((FAILED + 1))
+    fi
+  else
+    pass "boot-test build fails cleanly with no kernel present (exit ${rc})"
+    if printf '%s' "$out" | grep -qi "no kernel"; then
+      pass "and it says which input is missing"
+    else
+      warn "the build failure does not name the missing input"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n'
+banner_msg="the redmi-8a profile records the routes it can actually offer"
+printf '  %s\n' "$banner_msg"
+(
+  # shellcheck source=/dev/null
+  source "config/devices/redmi-8a.conf"
+  missing=""
+  for k in DEVICE_TEST_ROUTES DEVICE_ANDROID_HOST_SUPPORTED DEVICE_BOOT_TEST_SUPPORTED \
+           DEVICE_GUI_PORT_STEPS DEVICE_BOOT_TEST_STEPS DEVICE_BOOT_TEST_CONSOLE \
+           DEVICE_BOOT_TEST_EXPECTS_DISPLAY DEVICE_BOOT_TEST_REFLOWS_ANDROID; do
+    [ -n "${!k:-}" ] || missing="${missing} ${k}"
+  done
+  [ -z "$missing" ] || { err "missing:${missing}"; exit 1; }
+  # "unsupported" and "you can still run the GUI today" have to coexist in one
+  # file without either one quietly overwriting the other.
+  [ "${DEVICE_BOOT_STATUS}" = "unsupported" ] || {
+    err "an unported device must not claim supported"; exit 1; }
+  [ "${DEVICE_VERIFIED_BOOT}" = "no" ] || {
+    err "an unbooted device must not claim a verified boot"; exit 1; }
+  # The display expectation is the field most likely to be quietly wrong, and
+  # it is the one that decides whether the user looks at the right screen.
+  [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
+    err "a boot test on an Adreno 505 phone cannot expect a display"; exit 1; }
+  exit 0
+) 2>&1 | sed 's/^/      /' && pass "the profile is honest about both routes" || FAILED=$((FAILED + 1))
 
 printf '\n'
 if [ "$FAILED" -ne 0 ]; then

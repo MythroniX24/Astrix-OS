@@ -75,7 +75,57 @@ window-management policy either. The shell is the UI.
    main.c     Wayland/xdg-shell client setup
 ```
 
-### 3.1 Screen stack
+### 3.1 Visual language
+
+The shell draws with `gui/ui`, a software canvas with no GPU, no font engine
+and no layout system. That constraint is usually read as "the UI will have to
+look plain", and for a long time it did: flat rectangles, one shade of grey,
+system-default icons. Three additions changed that without adding a
+dependency.
+
+**Depth instead of borders.** A rectangle with a 1px outline reads as a hole in
+the screen. A rectangle with a vertical gradient, a soft drop shadow beneath it
+and a specular highlight along its top edge reads as a surface sitting above
+the screen. `astrix_draw_card()` does all three in one call, and it is what
+app tiles, recents cards and keyboard keys are built from — so a pressed key
+loses its shadow and gains the accent fill, which is what makes it read as
+pressed *in* rather than lit *on top of*.
+
+**Signed distance fields for icons.** `astrix_draw_glyph()` draws 20 icons
+(HOME, FOLDER, TERMINAL, SETTINGS, STORE, ANDROID, INFO, GRID, BACK, POWER,
+BATTERY, WIFI, KEYBOARD, CLOSE, SEARCH, MOON, GLOBE, MEMORY, CHECK, COUNT) as
+SDFs: circles, boxes, segments and ellipses combined with `min` for union and
+`max(d, −d_hole)` for a hole, then antialiased from the sign at whatever radius
+the caller asks for. One definition, any size, no assets, and composable — a
+hole in an icon is one more term in the expression rather than a second bitmap.
+
+This is only reliable because it is checked. `tests/glyph-proof.c` renders
+every glyph as ASCII and fails the build if a glyph draws less than 120 pixels
+of ink **or** if the ink's bounding box is more than a tenth of the box off
+centre. The WIFI glyph was first written as a clipped ring and the test caught
+it immediately — 110 pixels of ink, centred off by sixteen. It is now eleven
+polyline segments, one per arc, and it is correct for a reason rather than by
+eye.
+
+**Glass and bloom where they belong.** The status bar and the keyboard sheet
+are translucent (`astrix_fill_glass`), because they sit over content you still
+want to see. The wallpaper carries two radial accent blooms, each computed from
+the ellipse equation with a quadratic alpha falloff — one pass per row, so the
+cost is the area rather than area × steps. The navigation bar is a floating
+pill, not a full-width slab: a bar the same colour as the wallpaper reads as
+part of the wallpaper.
+
+Contrast is computed rather than assumed: `app_gradient()` tightens its top/bottom
+stops so white glyphs stay legible, and `icon_ink()` switches to dark ink on a
+light tile instead of painting white on white.
+
+Hit-testing was deliberately left untouched by all of this. Every rect the
+renderer draws has a matching rect in `input.c`, and changing one without the
+other is how a shell ends up beautiful and unusable. Only painting changed, and
+`test-shell-input` and `test-shell-size` still pass unchanged — which is the
+point of having them.
+
+### 3.2 Screen stack
 
 The shell maintains a stack of screens. Each screen renders into the shared
 canvas and reports the region it wants touch events for.
@@ -90,14 +140,14 @@ Pushing is `shell_push()`, popping is `shell_pop()`. The back gesture pops;
 if the stack is one deep it goes home rather than exiting, because a phone app
 that can lose your place is a phone app you stop trusting.
 
-### 3.2 Frame loop
+### 3.3 Frame loop
 
 The shell renders on demand, not on a timer. Input, a state change or a timer
 (expiry, animation frame) marks the shell dirty; the frame callback then
 redraws the whole screen into the shm buffer and commits. On a static screen
 this costs nothing, which is most of the time on a phone.
 
-### 3.3 The on-screen keyboard
+### 3.4 The on-screen keyboard
 
 The keyboard is the shell's, not the compositor's: it is part of the system UI,
 drawn by the shell into its own buffer, and it is dismissed by a `hide` key

@@ -81,7 +81,7 @@ is in [`docs/PORTING.md`](PORTING.md).
 | Target | Status | Evidence |
 | --- | --- | --- |
 | **QEMU (`virt`, arm64)** | **Boots.** | Every `./build.sh`; `tests/test-wayland-session.sh` runs the real compositor and shell under emulation; ~10 min to a mapped shell, ~190 s to `first-boot-complete`. |
-| Redmi 8A (olive) | Does not boot | Blockers below. |
+| Redmi 8A (olive) | Does not boot — but the GUI **can** be run on it, and the kernel **can** be boot-tested on it | Blockers below; two routes in [`docs/REDMI-8A.md`](REDMI-8A.md). |
 | moto g64 5G (retin) | Does not boot | Blockers below. |
 
 The QEMU path is not a toy: the same rootfs, the same compositor, the same
@@ -112,6 +112,26 @@ The realistic path runs through a community port's kernel — postmarketOS has a
 `olive` port and LineageOS maintains `kernel_olive`. Either way Astrix would be
 shipping someone else's kernel, and that trade-off should be made explicitly
 rather than quietly.
+
+### What *is* possible on this phone today
+
+Unsupported is not the same as unusable, and collapsing the two would waste the
+one device most people actually have in their pocket. `scripts/port-redmi-8a.sh`
+implements two routes, named for what they prove rather than for how they feel:
+
+| Route | What it does | Proves | Costs you |
+| --- | --- | --- | --- |
+| `android-host` | Runs the Astrix **userspace** as a `proot` chroot on the phone's own Android kernel, output bridged through Termux:X11 → SurfaceFlinger | The compositor, shell, keyboard and apps work on this SoC and panel | Nothing. No unlock, no flash, no partition touched. |
+| `boot-test` | Flashes Astrix's **kernel** to `boot` and reads the USB serial console | Astrix's kernel starts on `olive` and reaches userspace | Unlock (erases the phone), and Android until you flash it back. |
+
+```sh
+./scripts/port-redmi-8a.sh status
+./scripts/port-redmi-8a.sh android-host pack && ./scripts/port-redmi-8a.sh android-host push
+```
+
+Neither route boots Astrix OS, and the script says so every time it runs. Full
+detail, including exactly what has and has not been executed against a physical
+`olive`: [`docs/REDMI-8A.md`](REDMI-8A.md).
 
 ## moto g64 5G (retin) — MediaTek Dimensity 7025
 
@@ -167,7 +187,13 @@ plus the machinery that stops the missing parts being forgotten.
   profiles, because no porch values have ever been read off a working boot.
 - **`scripts/flash-device.sh`** — refuses to flash any device that has not been
   verified booting, refuses a locked bootloader, and requires a typed
-  confirmation of the codename.
+  confirmation of the codename. `ASTRIX_ALLOW_UNVERIFIED_FLASH=1` opens the
+  first gate, loudly and only when explicitly set: a gate that cannot be opened
+  is not a gate, and refusing every attempt is how no port ever starts.
+- **`scripts/port-redmi-8a.sh`** — the device-specific routes: pack and push the
+  Astrix userspace to run on Android's own kernel, or build and stage a
+  boot-test image. Same override requirement for the staging half. See
+  [`REDMI-8A.md`](REDMI-8A.md).
 - **`scripts/build-device.sh`** — the other half of the same promise. It
   assembles `build/device/<device>/` (kernel, dtb, rootfs) and refuses for the
   same reason, so a bundle nobody has booted from cannot be built by accident.
@@ -175,7 +201,9 @@ plus the machinery that stops the missing parts being forgotten.
   (Qualcomm UFS/QMP/RPMH/watchdog/clk/thermal; MediaTek UFS/PHY/DVFSRC/I2C/SMI;
   Panfrost). Enforced by the check above.
 - **`tests/test-devices.sh`** — fails the build if a profile claims support
-  without a verified boot, and proves the flasher refuses.
+  without a verified boot, proves the flasher refuses, proves the override is
+  what opens the gate (and that it announces itself when it does), and proves
+  the per-device port tool exists and keeps its own gate.
 
 ## Getting to a real boot
 
@@ -193,7 +221,10 @@ involved at all.
 
 For the Redmi 8A, the same first milestone is blocked on the bootloader, and
 the bootloader is blocked on a Xiaomi account and a waiting period that Astrix
-has no influence over.
+has no influence over. `scripts/port-redmi-8a.sh boot-test build` / `stage` /
+`log` is that milestone, packaged: it boots Astrix's kernel on `olive` and
+reads the proof off `ttyMSM0`, with the screen staying dark throughout because
+there is no Adreno 505 driver to draw with.
 
 The full ordered bring-up — serial console first, then device tree, then the
 seven-stage DRM pipeline with the `dmesg`/`/sys/class/drm` evidence that proves
