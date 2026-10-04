@@ -208,5 +208,54 @@ device tree for `olive`, not from measurement. The DSI blanking percentages in
 `config/devices/redmi-8a.conf` are an explicit assumption, recorded as one in
 the profile and labelled by `display-budget.sh`.
 
+---
+
+## The vendor kernel now builds
+
+```sh
+./scripts/build-vendor-kernel.sh          # olive
+```
+
+This is a second kernel, separate from the Astrix mainline kernel in
+`scripts/build-kernel.sh`: it is Qualcomm's CAF 4.9.112 "Roaring Lionus", the
+one the phone actually ships with, and the only one that knows how to light this
+panel.
+
+It **compiles**: a 30 MB `Image`, plus `sdm439-olive.dtb` and the interposer
+DTB carrying the panel timings. Verified from a pristine `git checkout -- .` of
+the upstream tree, so the script's own patching is proven and not just an
+incremental artefact.
+
+It also compiles in CI: `.github/workflows/vendor-kernel-olive.yml` runs this
+exact script on every push that touches it, at `BUILD_JOBS=4` instead of the
+build host's `-j1` (one vCPU, 2 GB), and uploads the `Image` and both DTBs as
+artefacts with 30-day retention. So you can get something flashable without
+waiting half an hour on a slow machine. If that workflow ever goes red, the
+first thing to check is the cross compiler: the tree needs
+`aarch64-linux-gnu-gcc-9`, and the runner's default gcc-11 will not compile it.
+
+Two things worth knowing before you go looking for the source:
+
+- **The obvious repo cannot be built.**
+  `redmi8a/android_kernel_xiaomi_olive` is missing all 1451 `.S` assembly
+  files — `entry.S`, `head.S`, the vDSO. Its GitHub contents API returns 404
+  for those paths. `scripts/build-vendor-kernel.sh` uses
+  `J0SH1X/android_kernel_xiaomi_olive` branch `GSI` instead: the same 4.9.112
+  CAF tree, complete.
+- **gcc 11 will not compile it.** The script pins `aarch64-linux-gnu-gcc-9`,
+  which does.
+
+What the device tree says (checked, not assumed): the panel is
+`dsi_hx8399c_truly_vid`, video-mode DSI on `qcom,mdss_dsi_pll_8937`, 60 Hz with
+48–60 Hz dynamic FPS. It advertises **1080x2160**, which does not match the
+720x1520 in the profile — unresolved, and a good example of the kind of thing
+only a real boot settles.
+
+**None of this is a boot.** The kernel drives the panel through the Android
+framebuffer stack (`FB_MSM_MDSS`), not DRM/KMS, so wlroots' DRM backend will not
+find a KMS device in it as configured. `DEVICE_VERIFIED_BOOT` is still `no`, and
+`tests/test-devices.sh` fails the profile if a building vendor kernel is ever
+allowed to imply a verified boot or an expected display.
+
 Related: [`DEVICES.md`](DEVICES.md), [`PORTING.md`](PORTING.md),
 [`ANDROID.md`](ANDROID.md).

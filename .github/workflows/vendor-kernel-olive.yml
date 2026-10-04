@@ -1,0 +1,125 @@
+name: vendor-kernel-olive
+
+# Builds the Redmi 8A (olive) Qualcomm CAF 4.9.112 kernel from
+# ./scripts/build-vendor-kernel.sh, the same script that is run by hand.
+#
+# Why CI: on the build host (1 vCPU, 2 GB RAM) this takes ~30 minutes at -j1.
+# A GitHub runner has 4 cores, so BUILD_JOBS is raised and the same build
+# finishes in a fraction of the time. The script's own -j default is left at 1
+# on purpose: that is what fits in 2 GB.
+#
+# What a green run here means, precisely:
+#   - the CAF tree still compiles end to end with gcc-9, i.e. the five build
+#     fixes in the script still apply and the tree still has the files they
+#     patch (a missing entry.S or vdso.lds fails the build loudly)
+#   - the display stack is still enabled: CONFIG_QCOM_KGSL, CONFIG_FB_MSM_MDSS,
+#     CONFIG_MSM_MDSS_PLL, CONFIG_FB_MSM_MDSS_DSI_CTRL_STATUS
+#   - the olive DTBs still build, and the hx8399c panel nodes are still there
+#
+# What it does NOT mean: that the kernel has booted on a phone. It never has.
+# It compiles; nobody has flashed it. The Image and DTBs are uploaded below so a
+# human with a Redmi 8A and a USB cable can try it, but a successful compile is
+# not evidence about hardware. See docs/STATUS.md section 4.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'scripts/build-vendor-kernel.sh'
+      - 'scripts/lib.sh'
+      - 'config/devices/redmi-8a.conf'
+      - '.github/workflows/vendor-kernel-olive.yml'
+  pull_request:
+    paths:
+      - 'scripts/build-vendor-kernel.sh'
+      - 'scripts/lib.sh'
+      - 'config/devices/redmi-8a.conf'
+      - '.github/workflows/vendor-kernel-olive.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vendor-kernel-olive-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: olive CAF 4.9.112 kernel + DTBs
+    runs-on: ubuntu-22.04
+    # A cold build (clone ~1 GB, then make) is the long pole; a warm one is
+    # minutes. 90 min is generous rather than tight on purpose.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the cross toolchain
+        run: |
+          sudo apt-get update
+          # gcc-9, not the distro default gcc-11: this 4.9 tree is rejected by
+          # gcc-11. flex/bison/bc/libssl-dev/libncurses-dev are what the CAF
+          # build system expects and its Makefiles will not tell you they are
+          # missing until much later.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-9 g++-9 gcc-9-aarch64-linux-gnu \
+            device-tree-compiler flex bison bc \
+            libssl-dev libncurses-dev
+
+      - name: cache the vendor kernel clone
+        uses: actions/cache@v4
+        with:
+          path: build/vendor/olive-kernel
+          key: olive-kernel-J0SH1X-GSI-4.9.112-${{ github.sha }}
+          restore-keys: |
+            olive-kernel-J0SH1X-GSI-4.9.112-
+
+      - name: build kernel and DTBs
+        env:
+          BUILD_JOBS: 4
+        run: ./scripts/build-vendor-kernel.sh --device olive
+
+      - name: what we actually produced
+        run: |
+          set -euo pipefail
+          IMAGE=build/vendor/olive-kernel/arch/arm64/boot/Image
+          DTB=build/vendor/olive-dtb/sdm439-olive.dtb
+          INTERPOSER=build/vendor/olive-dtb/msm8937-interposer-sdm439-olive.dtb
+          for f in "$IMAGE" "$DTB" "$INTERPOSER"; do
+            test -s "$f" || { echo "MISSING: $f"; exit 1; }
+            ls -l "$f"
+          done
+          # arm64 Image magic: 0x644d5241 ("ARM\x64" little-endian) -> 4d 5a 00 91
+          head -c 4 "$IMAGE" | od -An -tx1 | tr -d ' \n' | grep -qx '4d5a0091' \
+            || { echo "FAIL: $IMAGE is not an arm64 Image"; exit 1; }
+          echo "ok: arm64 Image magic present"
+
+      # The build script prints this warning itself; repeating it here means the
+      # person who opens this run in a browser sees it without scrolling.
+      - name: state the non-claim out loud
+        run: |
+          cat <<'EOF'
+          This kernel COMPILES. It has never been booted on a Redmi 8A.
+          DEVICE_VERIFIED_BOOT is "no" and stays "no" on the strength of this
+          job. Flashing is scripts/flash-device.sh's job, and it refuses
+          without ASTRIX_ALLOW_UNVERIFIED_FLASH=1.
+          EOF
+
+      - name: upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: olive-kernel-Image
+          path: build/vendor/olive-kernel/arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: upload DTBs
+        uses: actions/upload-artifact@v4
+        with:
+          name: olive-dtb
+          path: |
+            build/vendor/olive-dtb/sdm439-olive.dtb
+            build/vendor/olive-dtb/msm8937-interposer-sdm439-olive.dtb
+          if-no-files-found: error
+          retention-days: 30

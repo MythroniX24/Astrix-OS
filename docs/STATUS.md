@@ -73,6 +73,9 @@ actually stood in the way. |
 
 | V29 | **Both phones get the same tooling, and the layout is verified with no phone** | `scripts/port-common.sh` holds the device-agnostic machinery and each profile gets a thin wrapper, so `port-moto-g64-5g.sh` is new functionality rather than 800 copied lines that drift. **The panel layout is now a real test**: `tests/test-device-panels.sh` reads `DEVICE_PANEL_WIDTH`/`HEIGHT` out of every profile and runs the shell at 1080×2400 and 720×1520, asserting the dock band is on screen, all four icons are at least 15% of the panel width, a tap at each icon's centre hit-tests through the real `hit_test_dock_icon()`, all 44 keyboard keys fit with none a sliver, the status-bar keyboard button sits above the keyboard, and — through a pixel-luminance comparison against the wallpaper — that **the dock is painted where the hit-test claims it is**. Sizes are checked as fractions of the panel, not pixels, because the two phones have completely different densities. It also renders all 15 screens per device into `build/screens/<device>-<w>x<h>/`. This exists because the QEMU dev environment is 1024×768, a shape neither phone has, and a shell that lays out there can put its dock off a 2400-row screen. Verified: passes for both devices, and fails as it should on an impossible geometry (6 failures, non-zero exit). |
 
+| V30 | **The Redmi 8A's actual kernel now compiles** | See the V30 section below. `scripts/build-vendor-kernel.sh` builds Qualcomm's CAF 4.9.112 from a pristine clone with five build fixes and produces a 30 MB `Image` plus the two `olive` DTBs. **Never booted on hardware.** |
+| V31 | **The build runs in CI, and CI is not allowed to claim a boot** | Two GitHub Actions workflows. See the V31 section below. |
+
 ### The four bugs the keyboard work exposed
 
 Writing the delivery half found four real defects, none of them in the layout
@@ -147,6 +150,7 @@ device exists on this QEMU host, see §6).
 | Gesture recognition | Unit-tested on the host (V10) **and** exercised through real injected input on a booted VM (V17): a tap opens a dock app, a swipe-up-hold opens the app switcher, and a swipe up on a recents card closes that app (V20). Only the relative-pointer path is verified — see §4. |
 | Screen rendering | Every shell screen renders to PPM on the host and is visually inspectable in `build/screens/`. |
 | NetworkManager, PipeWire, seatd, udev, apt, polkit | Installed. Started by systemd; the boot reaches `multi-user.target` with them active. |
+| Redmi 8A vendor kernel | **Builds** (V30): `scripts/build-vendor-kernel.sh` clones CAF 4.9.112, applies 5 build fixes, and produces a 30 MB `Image` plus `sdm439-olive.dtb` and the interposer DTB carrying the hx8399c panel timings. Verified from a pristine tree, not just incrementally. **Never booted on hardware.** |
 
 ---
 
@@ -164,6 +168,7 @@ Listed so that nothing is mistaken for working.
 | **Sensors** (accelerometer, gyroscope, proximity, light) | Nothing. |
 | **Bluetooth** | `bluez` is installed. No pairing UI, no profile integration, no verification. |
 | **Wi-Fi / cellular radio bring-up on real hardware** | No hardware. NetworkManager is present and the stack is standard, but **no radio has been driven**. |
+| **Running Astrix on the vendor kernel's display path** | The vendor kernel builds and its panel DT is correct, but it lights the screen through the Android framebuffer stack (`FB_MSM_MDSS`), not DRM/KMS. wlroots' DRM backend will not find a KMS device in it as configured. Nothing has been bridged between the two yet. |
 | **Full-disk or per-user encryption** | Nothing. |
 | **Secure lock screen** | Nothing. Autologin is a documented development default. |
 | **Per-app sandboxing** | Every app runs as `astrix` with that user's full access. |
@@ -191,6 +196,11 @@ These are things that could be *mistaken* for support, and are not:
   android-host`). That is a real Astrix session on real hardware and it is
   **not** booting Astrix OS. The kernel itself has never been on either phone.
   See `docs/REDMI-8A.md` and `docs/MOTO-G64-5G.md`.
+- **"The Redmi 8A vendor kernel is ready to flash."** It compiles, and its
+  device tree carries the right panel timings — but compiling is not booting.
+  It has never run on the device, and the display path it uses (Android
+  framebuffer, not DRM/KMS) is not yet something Astrix's compositor can drive.
+  "Builds" is the whole of the claim.
 - **"The moto g64 5G is nearly supported because Panfrost works."** Panfrost
   does drive the Mali-G57 MC2 — that is the real difference from the Redmi 8A.
   But a GPU with nothing to present a scanout to is not a display, and MT6855's
@@ -226,7 +236,112 @@ Each milestone had to be *testable* before it counted.
 | M3 — Wayland session works | The shell maps a surface on the real compositor (host test) |
 | M4 — boots to a graphical session | **Reached and verified** (V15–V23). DRM/KMS + libinput + libseat come up, the compositor binds `astrix-0`, the shell adopts the real 1024x768 panel and shows a populated 7-app launcher, and **real injected input drives the whole app lifecycle**: a dock tap starts a real process that maps a window, a swipe-up-hold opens the app switcher, and a swipe up on a recents card sends that process `SIGTERM` and the compositor sees the client disconnect — `sent SIGTERM to 'Files' (pid 890)` → `app closed`, with the compositor and shell each still on a single PID throughout. The full `./build.sh` pipeline was re-run from a clean GUI stage as `BUILD COMPLETE in 513s` with 35/35 host tests. Still unverified: true multi-touch / absolute touch input (no evdev tablet node exists on this QEMU host — see §6), a picture of the UI on the virtio-gpu primary plane (`screendump` captures the console scanout, not the DRM plane — bug 16), and **any physical device at all** (`docs/DEVICES.md`). |
 | M5 — Android compatibility | Not started |
-| M6 — physical device | Not started |
+| M6 — physical device | Not started (the Redmi 8A vendor kernel now builds — see below) |
+
+### V30 — the Redmi 8A vendor kernel builds
+
+This is the first time the *actual kernel* a Redmi 8A ships with has been
+compiled in this project. It is a step toward M6, not M6.
+
+**The obvious source repo does not work.** `redmi8a/android_kernel_xiaomi_olive`
+looks authoritative and its `docs/STATUS.md` history previously cited it. It is
+incomplete: **all 1451 `.S` assembly files are absent** — `arch/arm64/kernel/
+entry.S`, `head.S`, `lib/raid/md5.S`, the entire vDSO. Confirmed two ways: the
+GitHub contents API returns 404 for those paths, and the file list differs from
+upstream `v4.9.112` by exactly those files. A build of it dies immediately at
+`No rule to make target 'arch/arm64/kernel/vdso/vdso.lds'`. Filling the gaps
+from upstream gets further but then fails on genuinely CAF-specific assembly
+(`entry.S` expects `TI_FLAGS`, CAF renamed it `TSK_TI_FLAGS`), which is how it
+became clear this is a stripped upload rather than a different flavour.
+
+`J0SH1X/android_kernel_xiaomi_olive` branch `GSI` is the same 4.9.112 CAF
+tree and is complete — 60,698 files, all 1455 `.S` present, and a defconfig
+that differs from the vendor one in four lines. That is what
+`scripts/build-vendor-kernel.sh` uses.
+
+**Five fixes were needed, all reproducible from a pristine clone.** They are
+build fixes, not behaviour changes:
+
+1. **Sibling `<>` includes and `TRACE_INCLUDE_PATH "."`** in 26 directories
+   (bluetooth, gpu/msm, camera, ipa, qcom clk, …). Scoped `-I$(src)` per
+   directory, deliberately *not* a global `-I`: `cam_utils` (v2 and v3) and
+   `ipa_v2`/`ipa_v3` contain same-named headers, and a global include path
+   silently shadows one with the other. An earlier attempt with `KCFLAGS`
+   failed exactly that way — `drivers/base/regmap/regmap.c` picked up
+   `drivers/usb/gadget/udc/trace.h` instead of its own.
+2. **`camera_v2` sibling includes** — `ccflags-y` does not propagate into
+   sub-directories, so the 27 camera sub-directories each need the full set.
+   This subtree has no duplicate header basenames (checked), so listing them
+   all is safe here.
+3. **`drivers/usb/gadget`** — `configfs.c` includes `<function/u_ncm.h>`, but
+   only `udc/` was on the include path.
+4. **`__efistub_strrchr` — a real link error, not an include problem.** CAF
+   added a `strrchr()` call to `scripts/dtc/libfdt/fdt_ro.c` (upstream has
+   none). The EFI stub links libfdt but is freestanding and pulls in only
+   `libstub/string.c`, which defines `strstr` and `strncmp` but not `strrchr`.
+   The guard is deliberately *not* `__HAVE_ARCH_STRRCHR`: `asm/string.h`
+   defines it because arm64's `lib/string.c` provides the function for the
+   real kernel — which the stub does not link. Only `libstub/string.c` defines
+   it, so there is no clash.
+5. **The olive DTBs were never being built.** `sdm439-olive.dtb` and
+   `msm8937-interposer-sdm439-olive.dtb` appear in the qcom `Makefile` only as
+   an *overlay base*, never in a `dtb-` list, so kbuild skipped them — and they
+   are the ones carrying the panel timings.
+
+Result: `arch/arm64/boot/Image`, 30 MB, plus both DTBs. The build was re-run
+from a `git checkout -- .` pristine tree so the script's own patching is
+verified, not just the incremental result.
+
+**What the device tree actually says** (checked, not assumed): the Redmi 8A
+panel is `dsi_hx8399c_truly_vid`, a 1080x2160 video-mode DSI panel at 60 Hz
+with 48–60 Hz dynamic FPS, driven by `qcom,mdss_dsi_pll_8937`. One thing worth
+flagging: the preferred panel node advertises **1080x2160**, which does not
+match the 720x1520 the device profile records. Both `dsi_hx8399c_truly_vid`
+(FHD+) and `dsi_hx8399c_hd_vid` (720x1440) exist in the tree. This is
+unresolved and is exactly the kind of thing that only a real boot would settle.
+
+**Still not true:** the kernel drives the panel through the Android framebuffer
+stack, not DRM/KMS, so nothing has been bridged to Astrix's compositor yet, and
+nothing has been flashed. `DEVICE_VERIFIED_BOOT` remains `no`.
+
+### V31 — the build runs in CI
+
+The vendor kernel takes ~30 minutes on the build host, which is one vCPU and
+2 GB of RAM: `make` runs at `-j1` because anything more OOMs. That is a property
+of the *host*, not of the build, so it does not belong in the project's
+limitations — it belongs on a machine with cores.
+
+`.github/workflows/ci.yml` runs `./tests/run-all.sh` unmodified on
+`ubuntu-22.04` on every push and pull request. It is the same script, the same
+44 checks, the same exit status. Deliberately **not** `--fast`: on a cold
+runner `--fast` skips the package-manifest test, which is the check that catches
+a package name that does not exist in the target suite. A green run that quietly
+dropped a real test would be worse than no CI.
+
+`.github/workflows/vendor-kernel-olive.yml` builds the CAF kernel with
+`BUILD_JOBS=4` and uploads the `Image` and both DTBs as artefacts, so a person
+with a Redmi 8A and a cable does not have to wait 30 minutes on a 1-vCPU box to
+get something flashable. It pins `ubuntu-22.04` and installs
+`gcc-9-aarch64-linux-gnu` explicitly: this 4.9 tree is rejected by gcc-11, which
+is the runner's default. That is the single most likely reason for this workflow
+to go red, so the job says so.
+
+**What a green CI run is worth, stated plainly.** It proves the CAF tree still
+compiles end to end (so the five fixes still apply and no required file has
+gone missing), the display stack is still enabled, and the DTBs still build with
+the hx8399c panel nodes. It proves nothing at all about a phone. A compiled
+kernel is not a booted kernel.
+
+So `tests/test-devices.sh` now asserts the workflows themselves: both files
+exist, `ci.yml` invokes `./tests/run-all.sh` rather than a hand-picked subset,
+`vendor-kernel-olive.yml` invokes the same `build-vendor-kernel.sh` the build
+host runs, and neither workflow may set `DEVICE_VERIFIED_BOOT` (comments are
+excluded from that check — documenting the non-claim is the point). Both failure
+directions were verified: deleting `ci.yml` fails the suite, and adding
+`DEVICE_VERIFIED_BOOT=yes` to it fails the suite.
+
+`DEVICE_VERIFIED_BOOT` is `no` on both profiles and stays `no` on the strength of
+a green badge or not at all.
 
 ### Bugs found and fixed by actually booting
 
@@ -706,6 +821,15 @@ kind of project.
   emulated single core.
 - **The build host has no FAT kernel module**, so the ESP is written with
   `mtools` and never mounted. `scripts/build-image.sh` depends on this.
-- **No CI.** The test suite runs by hand on the build host.
+- **CI exists but proves less than a phone would.** Two GitHub Actions
+  workflows run on every push (`.github/workflows/ci.yml` runs
+  `./tests/run-all.sh` unmodified on a runner; `vendor-kernel-olive.yml` builds
+  the CAF kernel with `-j4`). They replace hand-running the suite on the build
+  host, and that is all. A green run is not a hardware boot, and
+  `DEVICE_VERIFIED_BOOT` is unaffected by either workflow.
+- **The CI runs the same slow path the build host does.** Nothing in CI is
+  faster to *interpret*, only to execute: the Wayland session test still SKIPs
+  in CI (no rootfs is built there) and the GUI is still cross-compiled under
+  `qemu-user` if `./build.sh` is ever added to a workflow.
 - **`SOURCE_DATE_EPOCH` is pinned** for reproducibility, but the build has not
   been verified to produce byte-identical images across two clean runs.

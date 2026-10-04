@@ -1,0 +1,72 @@
+name: host-tests
+
+# The host test suite is the same ./tests/run-all.sh that has always been run by
+# hand on the build host. This workflow only changes WHO runs it, not what it
+# asserts: it is the identical script, unmodified, and it fails the build on a
+# non-zero exit.
+#
+# What this does and does not prove:
+#   - proves: shell syntax, UI/shell unit tests, package manifest against the
+#     real Debian archive, device-profile honesty, display link budget, and the
+#     source-shape checks for the compositor.
+#   - does not prove: anything about a real phone. Nothing here boots hardware,
+#     and DEVICE_VERIFIED_BOOT stays "no" in config/devices/*.conf regardless of
+#     whether this workflow is green. A green CI run is not a hardware boot.
+#
+# Tests that need a built rootfs or a booted machine (test-wayland-session) SKIP
+# here rather than silently passing; the runner prints the skip reason.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: host tests (44 checks)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc libc6-dev xz-utils ca-certificates curl
+          gcc --version | head -1
+
+      - name: cache the Debian package index
+        uses: actions/cache@v4
+        with:
+          path: build/cache
+          key: debian-index-${{ runner.os }}-${{ hashFiles('config/os.conf') }}
+
+      # Not --fast: the package-manifest test is the one that catches a package
+      # name that does not exist in the target suite, and --fast skips it when
+      # there is no cached index. On a cold runner --fast would quietly drop a
+      # real check, which is exactly the kind of green that means nothing.
+      - name: run the test suite
+        run: ./tests/run-all.sh
+
+      - name: render screens (kept as an artefact to look at)
+        if: always()
+        run: ls -l build/screens 2>/dev/null || echo "no screens rendered"
+
+      - name: upload rendered screens
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: build/screens
+          if-no-files-found: ignore
+          retention-days: 7

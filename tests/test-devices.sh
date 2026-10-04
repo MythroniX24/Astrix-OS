@@ -387,12 +387,94 @@ for p in "${PROFILES[@]}"; do
     # screen waiting for something that was never going to appear.
     [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
       err "an unported display path cannot expect a display"; exit 1; }
+
+    # A vendor kernel that builds is NOT a device that boots. These two are the
+    # claims most likely to be quietly collapsed into one, so the profile has to
+    # state them separately: DEVICE_VENDOR_KERNEL_BUILDS is a fact about this
+    # repo, DEVICE_VERIFIED_BOOT is a fact about a phone.
+    if [ -n "${DEVICE_VENDOR_KERNEL_BUILDS:-}" ]; then
+      [ "${DEVICE_VENDOR_KERNEL_REPO_BAD:-}" ] || {
+        err "records a working vendor repo but not the unbuildable one it replaced"; exit 1; }
+      # The known-bad repo must stay marked bad. Pointing back at it would
+      # resurrect a 404-riddled tree as if it were usable.
+      case "${DEVICE_VENDOR_KERNEL_REPO}" in
+        *"redmi8a/android_kernel_xiaomi_olive"*) 
+          err "DEVICE_VENDOR_KERNEL_REPO points at the incomplete tree"; exit 1 ;;
+      esac
+      # Building the kernel resolves nothing about driving the panel.
+      [ "${DEVICE_VERIFIED_BOOT}" = "no" ] || {
+        err "a building vendor kernel must not be reported as a verified boot"; exit 1; }
+      [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
+        err "a kernel that only builds must not be expected to light the panel"; exit 1; }
+    fi
     exit 0
   ) > /tmp/astrix-profile-check.$$ 2>&1 && \
     pass "${dev}: the profile is honest about its routes" || \
     { sed 's/^/      /' /tmp/astrix-profile-check.$$; FAILED=$((FAILED + 1)); }
   rm -f /tmp/astrix-profile-check.$$
 done
+
+# ---------------------------------------------------------------------------
+# CI must not be allowed to drift into a claim.
+#
+# The failure mode this guards against is specific and not hypothetical: a
+# green Actions badge sitting next to a device profile that says
+# DEVICE_VERIFIED_BOOT="no" reads, to a human skimming, like the phone works.
+# It does not. CI runs the host suite and it compiles a kernel; neither event has
+# ever touched a Redmi 8A. So the workflows are asserted here:
+#   - they exist at all (a deleted workflow silently turns CI back into
+#     "someone ran it by hand once")
+#   - the host workflow runs ./tests/run-all.sh itself, not a filtered or
+#     hand-picked subset of it
+#   - the vendor-kernel workflow runs the same script the build host runs
+#   - no workflow claims a hardware boot
+# ---------------------------------------------------------------------------
+ci_check() {
+  local label="$1" file="$2"
+  local wf=".github/workflows/${file}"
+
+  if [ ! -f "$wf" ]; then
+    err "${label}: ${wf} is missing (CI is supposed to exist)"
+    return 1
+  fi
+  # Comments are excluded on purpose: these workflows *document* the non-claim,
+  # and saying "DEVICE_VERIFIED_BOOT stays no" in a comment is the honest thing
+  # to do. What must not exist is code that sets it.
+  if sed 's/[[:space:]]*#.*$//' "$wf" | grep -Eq 'DEVICE_VERIFIED_BOOT=|VERIFIED_BOOT=yes|BOOT_TEST_EXPECTS_DISPLAY=yes'; then
+    err "${label}: a workflow must never assert a hardware boot"
+    return 1
+  fi
+  pass "${label}: exists and claims no hardware boot"
+}
+
+if ! ci_check "host tests" "ci.yml"; then
+  FAILED=$((FAILED + 1))
+fi
+
+# The host workflow has to call the suite script itself. A workflow that
+# inlined a subset of the tests would go green while the real suite went red,
+# which is the exact opposite of what CI is for.
+if [ -f .github/workflows/ci.yml ]; then
+  if grep -Eq '(^|[[:space:]])\./tests/run-all\.sh([[:space:]]|$)' .github/workflows/ci.yml; then
+    pass "host tests: CI runs ./tests/run-all.sh itself"
+  else
+    err "host tests: ci.yml does not run ./tests/run-all.sh"
+    FAILED=$((FAILED + 1))
+  fi
+fi
+
+if ! ci_check "olive vendor kernel" "vendor-kernel-olive.yml"; then
+  FAILED=$((FAILED + 1))
+fi
+
+if [ -f .github/workflows/vendor-kernel-olive.yml ]; then
+  if grep -q 'build-vendor-kernel\.sh' .github/workflows/vendor-kernel-olive.yml; then
+    pass "olive vendor kernel: CI runs the same script the build host runs"
+  else
+    err "olive vendor kernel: the workflow does not run scripts/build-vendor-kernel.sh"
+    FAILED=$((FAILED + 1))
+  fi
+fi
 
 printf '\n'
 if [ "$FAILED" -ne 0 ]; then

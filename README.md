@@ -25,6 +25,10 @@ binaries. Android support is a *compatibility layer on top*, never the base.
 ./scripts/send-input.sh    # drive the VM with taps, swipes, holds and keys over QMP
 ./tests/run-all.sh         # host test suite
 ./clean.sh                 # remove build artefacts
+
+# The Redmi 8A's own kernel (Qualcomm CAF 4.9.112), needed to reach its panel.
+# Separate from the Astrix mainline kernel; see docs/REDMI-8A.md.
+./scripts/build-vendor-kernel.sh
 ```
 
 `build.sh` takes a while the first time (it downloads and unpacks a Debian
@@ -176,12 +180,14 @@ than a confusing error 180 seconds later.
 | Visual language | Vector icon glyphs (14, drawn as signed distance fields), gradient cards with soft shadows, glass status/navigation bars, depth in the wallpaper. Verified by `test-glyphs` (every glyph must have ink and be centred) and by rendering every screen to `build/screens/` |
 | System on-screen keyboard | **Verified typing**: QWERTY, symbols, shift/caps, space/return/backspace. Keys are delivered through `zwp_virtual_keyboard_v1`, so they reach the focused app instead of stopping at the shell — confirmed on a booted VM (`on-screen key 'a'` → `key 38 pressed`) and on every host test run |
 | Native apps (terminal, files, sysinfo, settings, package manager, APK manager) | Built and installed as ARM64 ELF binaries |
-| Host test suite | 43 tests, all passing |
+| Host test suite | 44 tests, all passing. Also run on every push by `.github/workflows/ci.yml` — the same `./tests/run-all.sh`, unmodified |
 | Android APK execution (Waydroid) | **Not implemented** — see `docs/ANDROID.md` |
 | Physical-device boot | **Not implemented** — no phone has ever been booted. Profiles and a gated flasher exist for the Redmi 8A and moto g64 5G; see `docs/DEVICES.md` |
 | Running the Astrix GUI on a phone | `scripts/port-<device>.sh android-host` — the Astrix userspace in a proot chroot on Android's own kernel, bridged out through Termux:X11. Nothing unlocked, nothing flashed. **This is not booting Astrix OS**, and the script says so every time it runs. Works for both the Redmi 8A and the moto g64 5G |
 | Boot-testing Astrix's kernel on a phone | `scripts/port-<device>.sh boot-test` — build a flashable boot image, stage it, read the proof off `ttyMSM0` over USB. The screen stays dark: the Adreno 505 has no mainline driver at all, and the moto g64 5G's Mali is driven by Panfrost but has no upstream DSI/panel path to present to. `docs/REDMI-8A.md`, `docs/MOTO-G64-5G.md` |
 | Panel layout verified with no phone | `tests/test-device-panels.sh` — the shell runs at each profile's real geometry (1080×2400, 720×1520) and every screen is asserted to fit and to accept taps, through the real hit-test and a pixel check that the dock is painted where the tap handler expects. Renders land in `build/screens/<device>-<w>x<h>/` |
+| Redmi 8A: vendor kernel | `./scripts/build-vendor-kernel.sh` **compiles** Qualcomm's CAF 4.9.112 — a 30 MB `Image` and the `olive` DTBs with the hx8399c panel timings — from a pristine tree, with 5 build fixes applied by the script. Still not a boot: it drives the panel via the Android framebuffer stack, not DRM/KMS, and nothing has been flashed. `docs/REDMI-8A.md` |
+| Continuous integration | Two GitHub Actions workflows: `ci.yml` runs the host suite, `vendor-kernel-olive.yml` builds the CAF kernel at `-j4` and uploads the `Image` and DTBs. Both are about *building*. Neither is evidence about a phone, and `tests/test-devices.sh` fails the build if a workflow ever starts claiming otherwise |
 | Redmi 8A: run the Astrix GUI on the phone | See the two rows above — `scripts/port-redmi-8a.sh`. `docs/REDMI-8A.md` |
 
 The last two rows are the honest ones. `docs/STATUS.md` is the single source of
