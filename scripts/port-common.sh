@@ -71,11 +71,13 @@ boot-test route (needs an unlocked bootloader; replaces the phone's kernel):
   build   build the boot-test image and ramdisk
   stage   fastboot flash boot
   log     capture the USB serial console
+  fb      pull /dev/fb0 off the phone and write a PNG of the framebuffer
   rollback  print how to put the phone's own OS back
 
 Override:
   ASTRIX_ALLOW_UNVERIFIED_FLASH=1   required by \`boot-test stage\`
   ASTRIX_ADB_SERIAL=<serial>        target one specific phone
+  DEVICE_FB_SERIAL=<serial>         which phone \`boot-test fb\` reads (if more than one is attached)
 EOF
 }
 
