@@ -76,6 +76,7 @@ actually stood in the way. |
 | V30 | **The Redmi 8A's actual kernel now compiles** | See the V30 section below. `scripts/build-vendor-kernel.sh` builds Qualcomm's CAF 4.9.112 from a pristine clone with five build fixes and produces a 30 MB `Image` plus the two `olive` DTBs. **Never booted on hardware.** |
 | V31 | **The build runs in CI, and CI is not allowed to claim a boot** | Two GitHub Actions workflows. See the V31 section below. |
 | V32 | **The Redmi 8A's vendor device tree feeds the panel the wrong timing, and there is finally a way to look at the display** | `qcom,dsi-pref-prim-pan` in the built `sdm439-olive.dtb` points at the 1080x2160 `hx8399c` node on 720x1520 hardware — a real boot failure, found by decompiling the `.dtb` rather than reading the `.dtsi`. `scripts/fb-screenshot.sh` plus `boot-test fb` make the vendor display path observable: `/dev/fb0` to PNG over adb, with the decode pinned by a megapixel round-trip. **Still not a boot, and a good capture is still not a lit panel.** See the V32 section. |
+| V33 | **The vendor-kernel build is reproducible across cached CI runs** | The CAF build fixes were not idempotent: CI caches the cloned tree, one fix's guard could never match what it wrote, so every run added another `strrchr` and the kernel build failed. Fixed, and pinned by `tests/test-vendor-kernel-fixes.sh`. See the V33 section. |
 
 ### The four bugs the keyboard work exposed
 
@@ -151,7 +152,7 @@ device exists on this QEMU host, see §6).
 | Gesture recognition | Unit-tested on the host (V10) **and** exercised through real injected input on a booted VM (V17): a tap opens a dock app, a swipe-up-hold opens the app switcher, and a swipe up on a recents card closes that app (V20). Only the relative-pointer path is verified — see §4. |
 | Screen rendering | Every shell screen renders to PPM on the host and is visually inspectable in `build/screens/`. |
 | NetworkManager, PipeWire, seatd, udev, apt, polkit | Installed. Started by systemd; the boot reaches `multi-user.target` with them active. |
-| Redmi 8A vendor kernel | **Builds** (V30): `scripts/build-vendor-kernel.sh` clones CAF 4.9.112, applies 5 build fixes, and produces a 30 MB `Image` plus `sdm439-olive.dtb` and the interposer DTB carrying the hx8399c panel timings. Verified from a pristine tree, not just incrementally. **V32: that DTB's `qcom,dsi-pref-prim-pan` points at the wrong panel node (1080x2160 on a 720x1520 panel) and must be repointed before flashing.** **Never booted on hardware.** |
+| Redmi 8A vendor kernel | **Builds** (V30): `scripts/build-vendor-kernel.sh` clones CAF 4.9.112, applies 5 build fixes from `scripts/vendor-kernel-fixes.sh`, and produces a 30 MB `Image` plus `sdm439-olive.dtb` and the interposer DTB carrying the hx8399c panel timings. Verified from a pristine tree, not just incrementally. **V33: those fixes are idempotent and pinned by a test, because CI caches the tree and re-runs them.** **V32: that DTB's `qcom,dsi-pref-prim-pan` points at the wrong panel node (1080x2160 on a 720x1520 panel) and must be repointed before flashing.** **Never booted on hardware.** |
 
 ---
 
@@ -389,6 +390,77 @@ and each made the suite fail, so the assertions are load-bearing.
 panel's real geometry. **What it does not:** that the DSI link is carrying them.
 The framebuffer is upstream of the link, so a full, correctly sized framebuffer
 with a dead panel is possible. The tool says so on every run.
+
+### V33 — the vendor-kernel build survives a cached CI run
+
+CI run 37248480850 failed with `error: redefinition of 'strrchr'` in
+`drivers/firmware/efi/libstub/string.c`. The first run of that workflow had been
+green, and so was every local build, because the local tree had been patched
+exactly once. The second CI run restored the cached `build/vendor/olive-kernel`
+and patched it again.
+
+The reason is a defect in the fix, not in the kernel. All five CAF build fixes
+skip themselves with `if ! grep -q "<marker>"`, and the strrchr fix guarded on
+
+```
+grep -q "Deliberately not guarded by __HAVE_ARCH_STRRCHR"
+```
+
+while inserting a comment reading
+
+```
+ * Astrix: deliberately NOT guarded by __HAVE_ARCH_STRRCHR.
+```
+
+Different case, and a different prefix. **The guard could never match, so it was
+never skipped**, and each run added another definition. This is the specific
+failure mode of the whole "cache the tree, re-run the patcher" arrangement, and
+it is invisible until a second run happens to touch a given file — the other
+four fixes happened to be applied to files nothing else rebuilds, so they were
+re-appended silently and nobody would have known.
+
+**Fix.** Two changes, because the guard was the wrong shape:
+
+1. The strrchr fix is now keyed on the file's **post-state** — "does this file
+   have exactly one `strrchr` definition?" — instead of on a marker that says
+   "we have been here". Idempotency means the post-state is already what I want,
+   not that I ran before. This also means a tree already poisoned by the old
+   guard is **repaired** on the next run, rather than skipped forever: a marker
+   guard would have skipped the duplicate and left every subsequent CI run
+   failing until somebody invalidated the cache. A tree whose duplicates are not
+   recognisable as ours is **refused**, with the tree left untouched, because
+   writing a third definition on top of two is worse than stopping.
+2. The fixes moved out of `build-vendor-kernel.sh` into
+   `scripts/vendor-kernel-fixes.sh` as `vendor_kernel_apply_fixes <ksrc>`, so
+   they can be run against a synthetic tree. Finding this in a 30-minute kernel
+   build is the wrong place to find it. Every patch step also now checks its own
+   exit status: a python step that failed silently used to be hidden by the
+   function's last command succeeding, which would have produced a kernel built
+   without the fix and a link error much later.
+
+**The regression test.** `tests/test-vendor-kernel-fixes.sh` builds a synthetic
+CAF tree containing only the files the fixes touch, with the real anchor lines
+copied out of CAF 4.9.112, and then:
+
+- applies all five fixes **twice** and requires the tree to be byte-identical
+  (a single `md5sum` over every file, sorted);
+- requires each fix's marker to appear **exactly once** in its file;
+- requires `libstub/string.c` to define `strrchr` exactly once, *unguarded* by
+  `__HAVE_ARCH_STRRCHR` (guarding it would hide it from the freestanding EFI
+  stub again), and before the `strncmp` anchor it is inserted at;
+- requires a tree carrying two stale copies to be reduced to one;
+- requires a tree carrying two copies the patch does **not** recognise to be
+  refused, and left untouched;
+- requires every guard string to be a substring of the file that inserts it;
+- and finally **mutates** a guard into the shape of the original bug and
+  requires the tree to differ or the run to fail — so the test cannot be
+  weakened into a no-op without this noticing.
+
+Applying the fixes to the real, already-patched CAF tree on this host is now a
+verified no-op: every fix reports "already applied" and no file changes.
+
+This is a build-pipeline fix. It makes the kernel build reproducible; it says
+nothing about the panel, and nothing has been booted.
 
 Recorded because each was invisible without a real boot, and because the
 failure mode — a black screen with no message — is the defining hazard of this

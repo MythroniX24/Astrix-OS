@@ -343,6 +343,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The vendor-kernel build fixes have to be idempotent, because CI caches the
+# cloned CAF tree and re-runs them over it. They were not, and the result was a
+# libstub/string.c with two strrchr definitions that failed the kernel build in
+# CI while the local tree, patched once, built fine. A defect like that should
+# not cost a 30-minute build to find, so the fixes are applied here to a
+# synthetic tree twice and the result is required to be byte-identical.
+banner "vendor kernel build fixes"
+if bash tests/test-vendor-kernel-fixes.sh 2>&1 | sed 's/^/      /'; then
+  record "test-vendor-kernel-fixes" 0
+else
+  record "test-vendor-kernel-fixes" 1
+fi
+
+# ---------------------------------------------------------------------------
 # The first thing a "boot it with a display" port has to get right is not the
 # driver: it is whether the panel can physically be driven over the MIPI DSI
 # link at all. That is arithmetic, it can be checked on the host in seconds,

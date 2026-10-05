@@ -92,141 +92,17 @@ KVER_ACTUAL="$(sed -n 's/^VERSION = //p; s/^PATCHLEVEL = //p; s/^SUBLEVEL = //p'
 ok "kernel ${KVER_ACTUAL} $(sed -n 's/^NAME = //p' "${KSRC}/Makefile")"
 
 # --- patches ---------------------------------------------------------------
-# These are build fixes, not behaviour changes. Each one is a real defect in the
-# CAF tree that upstream/b Google's build system papers over; kbuild alone does
-# not. Grouped by cause rather than by file so the reasoning stays visible.
+# The fixes live in scripts/vendor-kernel-fixes.sh rather than inline so they
+# can be applied to a synthetic tree and tested for idempotency without a
+# 30-minute kernel build. That matters because CI caches the cloned tree between
+# runs: a fix whose idempotency guard does not match the text it actually writes
+# is applied again on every run, which is exactly how the EFI stub strrchr fix
+# came to be defined twice and failed the kernel build.
+# shellcheck source=vendor-kernel-fixes.sh
+source "${SCRIPT_DIR}/vendor-kernel-fixes.sh"
+
 if [ "$PATCHED" != "1" ]; then
-  log "applying CAF build fixes"
-
-  # 1. Include paths. CAF sources include sibling headers with <> and set
-  #    TRACE_INCLUDE_PATH to ".", neither of which resolves without the source
-  #    directory on the include path. Added per-directory rather than globally:
-  #    cam_utils (v2/v3) and ipa_v2/v3 contain same-named headers, so a global
-  #    -I silently shadows one with the other. -I$(src) is scoped and cannot.
-  #
-  #    Discovered by scanning every .c/.S for an <> include that names a header
-  #    sitting next to it, plus every header defining TRACE_INCLUDE_PATH to ".".
-  if ! grep -q "Astrix: CAF sources include sibling headers" \
-       "${KSRC}/drivers/bluetooth/Makefile" 2>/dev/null; then
-    sibling_note='
-# Astrix: CAF sources include sibling headers with <> and set TRACE_INCLUDE_PATH
-# to ".", neither of which resolves without the source directory on the include
-# path. Scoped to this directory so same-named headers elsewhere (cam_utils,
-# ipa_v2/v3) cannot shadow each other.
-ccflags-y += -I$(src)'
-    for d in drivers/bluetooth drivers/cpuidle drivers/gpu/msm \
-             drivers/media/platform/msm/camera_v2/common \
-             drivers/net/wireless/broadcom/brcm80211/brcmsmac \
-             drivers/video/fbdev/msm/msm_dba \
-             drivers/platform/msm/ipa/ipa_clients \
-             drivers/platform/msm/ipa/ipa_v2 \
-             drivers/platform/msm/ipa/ipa_v3 \
-             drivers/clk/qcom/mdss drivers/devfreq drivers/android \
-             drivers/staging/android/trace drivers/video/adf \
-             drivers/video/fbdev/msm drivers/soc/qcom \
-             drivers/media/platform/msm/sde/rotator \
-             drivers/media/platform/msm/camera/cam_utils \
-             drivers/media/platform/msm/camera_v3/cam_utils \
-             arch/arm64/kvm arch/mips/kvm arch/powerpc/kvm arch/s390/kvm \
-             arch/x86/kvm; do
-      [ -f "${KSRC}/${d}/Makefile" ] && printf '%s\n' "$sibling_note" >> "${KSRC}/${d}/Makefile"
-    done
-    pass "per-directory -I\$(src) for sibling <> includes"
-  fi
-
-  # 2. camera_v2 needs every sibling directory on its include path, because
-  #    ccflags-y does not propagate into sub-directories. Checked that this
-  #    subtree has no duplicate header basenames, so listing all 27 of them
-  #    cannot shadow anything.
-  if ! grep -q "Astrix: ccflags-y does not propagate into sub-directories, and the CAF" \
-       "${KSRC}/drivers/media/platform/msm/camera_v2/isp/Makefile" 2>/dev/null; then
-    cam_note='
-# Astrix: ccflags-y does not propagate into sub-directories, and the CAF camera
-# sources include headers from sibling directories with <>. This subtree has no
-# duplicate header basenames (checked), so listing every directory here cannot
-# shadow a same-named header.
-'
-    for d in $(cd "${KSRC}" && find drivers/media/platform/msm/camera_v2 -type d | sort) \
-             drivers/media/platform/msm/camera_v2; do
-      printf '%sccflags-y += -I$(srctree)/%s\n' "$cam_note" "$d" >> "${KSRC}/${d}/Makefile"
-    done
-    pass "camera_v2 sibling include paths"
-  fi
-
-  # 3. drivers/usb/gadget/configfs.c includes <function/u_ncm.h>, but only
-  #    drivers/usb/gadget/udc was on the include path.
-  if ! grep -q "Astrix: the CAF configfs.c includes <function/u_ncm.h>" \
-       "${KSRC}/drivers/usb/gadget/Makefile" 2>/dev/null; then
-    printf '\n# Astrix: the CAF configfs.c includes <function/u_ncm.h>, so the gadget\n# directory itself (not just udc/) has to be on the include path.\nccflags-y += -I$(srctree)/drivers/usb/gadget\n' \
-      >> "${KSRC}/drivers/usb/gadget/Makefile"
-    pass "usb/gadget include path"
-  fi
-
-  # 4. Real link error, not an include problem. CAF added a strrchr() call to
-  #    scripts/dtc/libfdt/fdt_ro.c (upstream does not have one). The EFI stub
-  #    links libfdt but is freestanding and pulls in only libstub/string.c, which
-  #    upstream defines strstr and strncmp in but not strrchr. Without a local
-  #    definition the final link fails on __efistub_strrchr.
-  #    The guard is deliberately NOT __HAVE_ARCH_STRRCHR: arm64's asm/string.h
-  #    defines it, because arm64's lib/string.c provides the function for the
-  #    real kernel - but the stub does not link lib/string.c. Only
-  #    libstub/string.c defines it, so there is no clash.
-  if ! grep -q "Deliberately not guarded by __HAVE_ARCH_STRRCHR" \
-       "${KSRC}/drivers/firmware/efi/libstub/string.c" 2>/dev/null; then
-    python3 - "${KSRC}/drivers/firmware/efi/libstub/string.c" <<'PATCH'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-addition = '''/*
- * Astrix: deliberately NOT guarded by __HAVE_ARCH_STRRCHR.
- * arch/arm64/include/asm/string.h defines __HAVE_ARCH_STRRCHR because arm64's
- * lib/string.c provides strrchr for the real kernel, but the EFI stub is
- * freestanding and links only libstub's own string.c. CAF added a strrchr()
- * call to scripts/dtc/libfdt/fdt_ro.c (upstream has none), so without a local
- * definition the final vmlinux link fails with an undefined reference to
- * __efistub_strrchr. Only libstub/string.c defines it, so no clash with
- * lib/string.c in the actual kernel.
- */
-char *strrchr(const char *s, int c)
-{
-\tchar *last = NULL;
-
-\tdo {
-\t\tif (*s == (char)c)
-\t\t\tlast = (char *)s;
-\t} while (*s++);
-\treturn last;
-}
-
-#ifndef __HAVE_ARCH_STRNCMP
-'''
-text = text.replace('#ifndef __HAVE_ARCH_STRNCMP\n', addition, 1)
-open(path, 'w').write(text)
-PATCH
-    pass "EFI stub strrchr"
-  fi
-
-  # 5. The olive DTBs are referenced only as an overlay base, so kbuild never
-  #    builds them. They are the ones carrying the panel timings.
-  if ! grep -q "Astrix: the olive DTBs" \
-       "${KSRC}/arch/arm64/boot/dts/qcom/Makefile" 2>/dev/null; then
-    python3 - "${KSRC}/arch/arm64/boot/dts/qcom/Makefile" <<'PATCH'
-import sys
-path = sys.argv[1]
-text = open(path).read()
-note = ('\n# Astrix: the olive DTBs were referenced only as an overlay base, so\n'
-        '# kbuild never built them - and they are the ones carrying the DSI panel\n'
-        '# timings.\n')
-text = text.replace('\tmsm8937-interposer-sdm429-mtp.dtb\n',
-                    '\tmsm8937-interposer-sdm429-mtp.dtb \\\n\tmsm8937-interposer-sdm439-olive.dtb\n', 1)
-text = text.replace('\tqm215-qrd-smb1360.dtb\n',
-                    '\tqm215-qrd-smb1360.dtb \\\n\tsdm439-olive.dtb\n', 1)
-open(path, 'w').write(text + note)
-PATCH
-    pass "olive DTBs added to the build"
-  fi
-
-  ok "patches applied"
+  vendor_kernel_apply_fixes "$KSRC"
 fi
 
 # --- build -----------------------------------------------------------------

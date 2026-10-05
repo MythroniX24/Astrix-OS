@@ -244,6 +244,15 @@ Two things worth knowing before you go looking for the source:
   CAF tree, complete.
 - **gcc 11 will not compile it.** The script pins `aarch64-linux-gnu-gcc-9`,
   which does.
+- **Re-running it has to be safe, because CI does.** `vendor-kernel-olive.yml`
+  caches the cloned tree between runs, so `scripts/build-vendor-kernel.sh`
+  re-applies its fixes to a tree that already has them. The fixes live in
+  `scripts/vendor-kernel-fixes.sh` and are pinned by
+  `tests/test-vendor-kernel-fixes.sh`, which applies them to a synthetic tree
+  **twice** and requires a byte-identical result. This is not ceremony: the
+  strrchr fix once guarded on a marker that did not match the text it wrote, so
+  every cached run added another definition and CI failed with
+  `redefinition of 'strrchr'` while the local tree, patched once, built fine.
 
 ### The device tree points the panel at the wrong timing
 
