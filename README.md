@@ -22,6 +22,7 @@ binaries. Android support is a *compatibility layer on top*, never the base.
 ./build.sh                 # full build: rootfs -> GUI -> image
 ./run-qemu.sh              # boot the image in QEMU (ARM64, headless-friendly)
 ./scripts/screenshot.sh    # capture the running VM's screen over QMP
+./scripts/fb-screenshot.sh # capture a real /dev/fb0 (or a raw dump) as a PNG
 ./scripts/send-input.sh    # drive the VM with taps, swipes, holds and keys over QMP
 ./tests/run-all.sh         # host test suite
 ./clean.sh                 # remove build artefacts
@@ -44,6 +45,7 @@ minbase rootfs, then cross-builds every GUI binary). Options:
 | `./run-qemu.sh --headless` | No window; serial console to `build/qemu-serial.log`. |
 | `SSH_PORT=2223 ./run-qemu.sh` | Change the forwarded guest SSH port. |
 | `./scripts/screenshot.sh` | While the VM is running: `screendump` over the QMP socket → `build/astrix-screenshot.png`. **Note:** on virtio-gpu this captures the text console, not the compositor's DRM plane — see the header of `scripts/screenshot.sh`. |
+| `./scripts/fb-screenshot.sh` | Read a real framebuffer device (`/dev/fb0`, or a raw dump via `--input`) and write a PNG or PPM. Handles 16bpp RGB565 and 24/32bpp, reads stride from sysfs, and refuses a buffer too short to be a framebuffer. This is the phone path — the vendor kernel has no DRM/KMS, so the framebuffer is the only place the pixels are. |
 | `./scripts/send-input.sh tap 512 538` | While the VM is running: inject a real tap at **normalised** 0..1 coordinates over the QMP socket, so it works at any guest resolution. `swipe`, `hold`, `key`, `pos` are also available. |
 | `ASTRIX_SCREEN_W=720 ASTRIX_SCREEN_H=1600 ASTRIX_POINTER_SCALE=1.0 ./scripts/send-input.sh tap 0.5 0.95` | Treat the guest as a 720x1600 portrait panel. `ASTRIX_POINTER_SCALE` compensates libinput pointer acceleration (this guest applies exactly 2.0x). |
 
@@ -180,7 +182,7 @@ than a confusing error 180 seconds later.
 | Visual language | Vector icon glyphs (14, drawn as signed distance fields), gradient cards with soft shadows, glass status/navigation bars, depth in the wallpaper. Verified by `test-glyphs` (every glyph must have ink and be centred) and by rendering every screen to `build/screens/` |
 | System on-screen keyboard | **Verified typing**: QWERTY, symbols, shift/caps, space/return/backspace. Keys are delivered through `zwp_virtual_keyboard_v1`, so they reach the focused app instead of stopping at the shell — confirmed on a booted VM (`on-screen key 'a'` → `key 38 pressed`) and on every host test run |
 | Native apps (terminal, files, sysinfo, settings, package manager, APK manager) | Built and installed as ARM64 ELF binaries |
-| Host test suite | 44 tests, all passing. Also run on every push by `.github/workflows/ci.yml` — the same `./tests/run-all.sh`, unmodified |
+| Host test suite | 47 tests, all passing. Also run on every push by `.github/workflows/ci.yml` — the same `./tests/run-all.sh`, unmodified |
 | Android APK execution (Waydroid) | **Not implemented** — see `docs/ANDROID.md` |
 | Physical-device boot | **Not implemented** — no phone has ever been booted. Profiles and a gated flasher exist for the Redmi 8A and moto g64 5G; see `docs/DEVICES.md` |
 | Running the Astrix GUI on a phone | `scripts/port-<device>.sh android-host` — the Astrix userspace in a proot chroot on Android's own kernel, bridged out through Termux:X11. Nothing unlocked, nothing flashed. **This is not booting Astrix OS**, and the script says so every time it runs. Works for both the Redmi 8A and the moto g64 5G |
@@ -188,6 +190,7 @@ than a confusing error 180 seconds later.
 | Panel layout verified with no phone | `tests/test-device-panels.sh` — the shell runs at each profile's real geometry (1080×2400, 720×1520) and every screen is asserted to fit and to accept taps, through the real hit-test and a pixel check that the dock is painted where the tap handler expects. Renders land in `build/screens/<device>-<w>x<h>/` |
 | Redmi 8A: vendor kernel | `./scripts/build-vendor-kernel.sh` **compiles** Qualcomm's CAF 4.9.112 — a 30 MB `Image` and the `olive` DTBs with the hx8399c panel timings — from a pristine tree, with 5 build fixes applied by the script. Still not a boot: it drives the panel via the Android framebuffer stack, not DRM/KMS, and nothing has been flashed. `docs/REDMI-8A.md` |
 | Continuous integration | Two GitHub Actions workflows: `ci.yml` runs the host suite, `vendor-kernel-olive.yml` builds the CAF kernel at `-j4` and uploads the `Image` and DTBs. Both are about *building*. Neither is evidence about a phone, and `tests/test-devices.sh` fails the build if a workflow ever starts claiming otherwise |
+| Seeing a phone's real display | `scripts/fb-screenshot.sh` reads `/dev/fb0` and writes a PNG, and `scripts/port-redmi-8a.sh boot-test fb` pulls the framebuffer off a booted phone over adb and decodes it. This is the only way to look at what the vendor display path is producing, because it drives the panel through fbdev rather than DRM/KMS. The decode is pinned by `tests/test-fb-screenshot.sh`, including a megapixel round-trip at the Redmi 8A's real geometry. **A capture proves the framebuffer holds correct pixels; it does not prove the DSI link is carrying them** |
 | Redmi 8A: run the Astrix GUI on the phone | See the two rows above — `scripts/port-redmi-8a.sh`. `docs/REDMI-8A.md` |
 
 The last two rows are the honest ones. `docs/STATUS.md` is the single source of

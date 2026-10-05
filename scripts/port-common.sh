@@ -720,6 +720,118 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Read the framebuffer off a booted phone and turn it into a picture.
+#
+# Why this stage exists
+# --------------------
+# The boot-test route is defined by the screen staying dark: the mainline kernel
+# has no driver that can draw to this panel. A dark screen and a broken screen
+# are indistinguishable by looking at the phone, which is the whole problem -
+# and it stays a problem right up to the point where the vendor kernel (which
+# *does* have a display driver) is flashed instead.
+#
+# The vendor kernel drives the panel through fbdev. So when it is running,
+# /dev/fb0 holds the pixels MDSS is about to scan out to the DSI link, and
+# reading it answers the question worth asking: are there correct pixels in the
+# framebuffer, at the right resolution?
+#
+# What a good capture does NOT prove: that the DSI link is carrying them. The
+# framebuffer is upstream of the link, so a full, correctly sized framebuffer
+# with a dead panel is entirely possible. But it does prove the compositor is
+# drawing at the panel's real geometry, which is the failure this project is
+# most likely to hit - and on this device the vendor device tree is already
+# known to prefer a 1080x2160 timing on a 720x1520 panel.
+#
+# Transport is adb, because that is what a booted phone has. The framebuffer is
+# pulled as a raw dump (there is no header, so the geometry comes from sysfs on
+# the device) and decoded on the host.
+# ---------------------------------------------------------------------------
+port_boot_test_fb() {
+  local out="${1:-${ASTRIX_BUILD_DIR}/fb-${DEVICE}-fb0.png}"
+  local serial="${DEVICE_FB_SERIAL:-}"
+  # port-common.sh is sourced by the per-device wrappers and does not otherwise
+  # need the repo root, so resolve it here rather than assuming a global.
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  log "Pulling the framebuffer off ${DEVICE_NAME}"
+
+  if [ -z "$serial" ]; then
+    # More than one device attached is ambiguous, and silently picking the first
+    # would mean capturing a screenshot of the wrong phone.
+    local n
+    n="$(adb devices | grep -c 'device$' || true)"
+    case "$n" in
+      1) serial="$(adb devices | awk '/device$/{print $1}')" ;;
+      0) die "no adb device. Boot the phone, turn on USB debugging, plug it in." ;;
+      *) die "${n} adb devices attached. Refusing to guess which one:
+    re-run with: DEVICE_FB_SERIAL=<serial> ./scripts/port-${DEVICE}.sh boot-test fb" ;;
+    esac
+  fi
+  info "device: ${serial}"
+
+  # Geometry from the device's own sysfs. It cannot be guessed host-side from the
+  # byte count: 720x1520x4 and 760x1440x4 are the same number of bytes.
+  local vs w h bpp stride
+  vs="$(adb -s "$serial" shell cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr -d '\r')"
+  bpp="$(adb -s "$serial" shell cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null | tr -d '\r')"
+  stride="$(adb -s "$serial" shell cat /sys/class/graphics/fb0/stride 2>/dev/null | tr -d '\r')"
+
+  if [ -z "$vs" ] || [ -z "$bpp" ]; then
+    err "no /sys/class/graphics/fb0 on the device."
+    printf '\n'
+    err "That means no framebuffer driver bound. On the mainline kernel that is"
+    err "expected - there is no driver that can drive this panel. On the vendor"
+    err "kernel it means FB_MSM_MDSS did not probe, which is a real failure."
+    printf '\n'
+    dim "adb -s ${serial} shell dmesg | grep -iE 'mdss|dsi|fb0|panel'"
+    exit 1
+  fi
+
+  w="${vs%x*}"; h="${vs#*x}"
+  info "framebuffer ${w}x${h} at ${bpp}bpp, stride ${stride:-unknown}"
+
+  # The profile's own geometry, so a capture at the wrong size is called out here
+  # rather than discovered by a person squinting at a stretched image.
+  if [ -n "${DEVICE_PANEL_WIDTH:-}" ] && [ -n "${DEVICE_PANEL_HEIGHT:-}" ]; then
+    if [ "${w}x${h}" = "${DEVICE_PANEL_WIDTH}x${DEVICE_PANEL_HEIGHT}" ]; then
+      pass "the framebuffer matches this profile's panel geometry exactly"
+    else
+      warn "framebuffer is ${w}x${h} but the profile records ${DEVICE_PANEL_WIDTH}x${DEVICE_PANEL_HEIGHT}"
+      warn "on this device that is a known failure mode, not a rounding difference:"
+      warn "the vendor device tree prefers a 1080x2160 timing on a 720x1520 panel."
+      warn "If the image below is cut off or stretched, that is why."
+    fi
+  fi
+
+  local dump="${ASTRIX_BUILD_DIR}/fb-${DEVICE}-fb0.raw"
+  log "Pulling /dev/fb0 from the device (this takes a moment over USB)"
+  adb -s "$serial" exec-out dd if=/dev/fb0 bs=65536 2>/dev/null > "$dump" \
+    || die "adb could not read /dev/fb0. Root is required:
+    adb -s ${serial} root && adb -s ${serial} wait-for-device"
+
+  local got; got="$(wc -c < "$dump")"
+  info "pulled ${got} bytes"
+
+  log "Decoding with scripts/fb-screenshot.sh"
+  # shellcheck disable=SC2086  # stride is genuinely optional
+  "$repo_root/scripts/fb-screenshot.sh" \
+    --input "$dump" --width "$w" --height "$h" --bpp "$bpp" \
+    ${stride:+--stride "$stride"} \
+    "$out"
+
+  printf '\n'
+  ok "capture: ${out}"
+  dim "OPEN IT. A correct Astrix home screen at ${w}x${h} means the compositor"
+  dim "is drawing at the panel's real geometry."
+  printf '\n'
+  warn "This does NOT prove the panel is lit. The framebuffer is upstream of the"
+  warn "DSI link: a full, correctly sized framebuffer with a dead panel is"
+  warn "possible, and only looking at the phone can tell you."
+  printf '\n'
+}
+
+# ---------------------------------------------------------------------------
 port_boot_test_stage() {
   # The consent gate comes before the input check on purpose. Whether the
   # image exists is not the question that matters here; whether this person
@@ -860,8 +972,9 @@ port_dispatch() {
         build)    port_boot_test_build ;;
         stage)    port_boot_test_stage ;;
         log)      shift 2 || true; port_boot_test_log "${1:-120}" ;;
+        fb)       shift 2 || true; port_boot_test_fb "$@" ;;
         rollback) port_boot_test_rollback ;;
-        *) err "boot-test needs one of: build stage log rollback"; exit 1 ;;
+        *) err "boot-test needs one of: build stage log fb rollback"; exit 1 ;;
       esac ;;
     -h|--help|help|"") port_usage ;;
     *) err "unknown command: $cmd"; port_usage; exit 1 ;;

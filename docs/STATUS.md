@@ -75,6 +75,7 @@ actually stood in the way. |
 
 | V30 | **The Redmi 8A's actual kernel now compiles** | See the V30 section below. `scripts/build-vendor-kernel.sh` builds Qualcomm's CAF 4.9.112 from a pristine clone with five build fixes and produces a 30 MB `Image` plus the two `olive` DTBs. **Never booted on hardware.** |
 | V31 | **The build runs in CI, and CI is not allowed to claim a boot** | Two GitHub Actions workflows. See the V31 section below. |
+| V32 | **The Redmi 8A's vendor device tree feeds the panel the wrong timing, and there is finally a way to look at the display** | `qcom,dsi-pref-prim-pan` in the built `sdm439-olive.dtb` points at the 1080x2160 `hx8399c` node on 720x1520 hardware — a real boot failure, found by decompiling the `.dtb` rather than reading the `.dtsi`. `scripts/fb-screenshot.sh` plus `boot-test fb` make the vendor display path observable: `/dev/fb0` to PNG over adb, with the decode pinned by a megapixel round-trip. **Still not a boot, and a good capture is still not a lit panel.** See the V32 section. |
 
 ### The four bugs the keyboard work exposed
 
@@ -150,7 +151,7 @@ device exists on this QEMU host, see §6).
 | Gesture recognition | Unit-tested on the host (V10) **and** exercised through real injected input on a booted VM (V17): a tap opens a dock app, a swipe-up-hold opens the app switcher, and a swipe up on a recents card closes that app (V20). Only the relative-pointer path is verified — see §4. |
 | Screen rendering | Every shell screen renders to PPM on the host and is visually inspectable in `build/screens/`. |
 | NetworkManager, PipeWire, seatd, udev, apt, polkit | Installed. Started by systemd; the boot reaches `multi-user.target` with them active. |
-| Redmi 8A vendor kernel | **Builds** (V30): `scripts/build-vendor-kernel.sh` clones CAF 4.9.112, applies 5 build fixes, and produces a 30 MB `Image` plus `sdm439-olive.dtb` and the interposer DTB carrying the hx8399c panel timings. Verified from a pristine tree, not just incrementally. **Never booted on hardware.** |
+| Redmi 8A vendor kernel | **Builds** (V30): `scripts/build-vendor-kernel.sh` clones CAF 4.9.112, applies 5 build fixes, and produces a 30 MB `Image` plus `sdm439-olive.dtb` and the interposer DTB carrying the hx8399c panel timings. Verified from a pristine tree, not just incrementally. **V32: that DTB's `qcom,dsi-pref-prim-pan` points at the wrong panel node (1080x2160 on a 720x1520 panel) and must be repointed before flashing.** **Never booted on hardware.** |
 
 ---
 
@@ -343,7 +344,52 @@ directions were verified: deleting `ci.yml` fails the suite, and adding
 `DEVICE_VERIFIED_BOOT` is `no` on both profiles and stays `no` on the strength of
 a green badge or not at all.
 
-### Bugs found and fixed by actually booting
+### V32 — the panel resolution conflict is resolved, and there is a way to look at the display
+
+Two results, one of which is a boot-blocking bug found by reading the built
+device tree rather than the source it came from.
+
+**The Redmi 8A's vendor device tree lights the wrong panel timing.**
+`sdm439-olive.dtb` contains two `hx8399c` nodes — `dsi_hx8399c_truly_video` at
+1080x2160 and `dsi_hx8399c_hd_video` at 720x1440 — and on
+`mdss_dsi_ctrl0@1a94000`, `qcom,dsi-pref-prim-pan` points at phandle `0x7f`.
+That phandle belongs to the **truly** node. So the DSI link is configured for a
+1080x2160 panel on hardware that is 720x1520 (Xiaomi's own spec page: HD+
+720x1520). Flashing that DTB unchanged gives a panel that is fed the wrong
+timing, which is a black or torn screen and not a cosmetic difference.
+
+This was previously recorded as an unresolved conflict — "DT advertises
+1080x2160, profile says 720x1520, only a real boot settles it". It is now
+settled, because it was never a hardware ambiguity: it is a bug in the vendor
+tree, and the `hd` node (720x1440) is the only candidate close to the real
+panel. Read out of the compiled `.dtb` with `dtc`, not from the `.dtsi`, so it
+describes the bytes that would actually be flashed. The profile now records the
+preferred node as wrong and names the correct one. **Repointing
+`qcom,dsi-pref-prim-pan` is the next concrete step**, and it is a DT patch to the
+Astrix overlay, not a kernel change.
+
+**`scripts/fb-screenshot.sh` — how a phone's display gets looked at.** The vendor
+kernel drives the panel through fbdev (`FB_MSM_MDSS`), so there is no KMS device
+to scan out of. That leaves `/dev/fb0` as the only place the pixels are while
+the panel is being lit. The tool reads it (or a raw dump), takes geometry from
+sysfs, and writes a PNG or PPM; `scripts/port-redmi-8a.sh boot-test fb` pulls the
+framebuffer off a booted phone over adb and decodes it.
+
+The decode is pinned by `tests/test-fb-screenshot.sh`, because a wrong decode
+here does not look like a tool bug — it looks like a dead display driver. All
+three failure modes are asserted, and the last one is checked by deliberately
+breaking the tool: reading 32bpp as RGBA instead of BGRA swaps red and blue;
+ignoring stride shears every row after the first into black; and a truncated
+buffer is refused rather than turned into a picture of noise. The final check
+round-trips a **720x1520 framebuffer with 1216 padding bytes per row** — built
+from the shell's own rendered home screen — and compares all 1,094,400 pixels
+byte for byte. Two mutations of the tool (channel order, stride) were applied
+and each made the suite fail, so the assertions are load-bearing.
+
+**What a capture proves:** the compositor is drawing correct pixels at the
+panel's real geometry. **What it does not:** that the DSI link is carrying them.
+The framebuffer is upstream of the link, so a full, correctly sized framebuffer
+with a dead panel is possible. The tool says so on every run.
 
 Recorded because each was invisible without a real boot, and because the
 failure mode — a black screen with no message — is the defining hazard of this

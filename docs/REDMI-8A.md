@@ -245,11 +245,42 @@ Two things worth knowing before you go looking for the source:
 - **gcc 11 will not compile it.** The script pins `aarch64-linux-gnu-gcc-9`,
   which does.
 
-What the device tree says (checked, not assumed): the panel is
-`dsi_hx8399c_truly_vid`, video-mode DSI on `qcom,mdss_dsi_pll_8937`, 60 Hz with
-48–60 Hz dynamic FPS. It advertises **1080x2160**, which does not match the
-720x1520 in the profile — unresolved, and a good example of the kind of thing
-only a real boot settles.
+### The device tree points the panel at the wrong timing
+
+This one is worth reading before flashing anything. Decompiling the **built**
+`sdm439-olive.dtb` (not reading the `.dtsi` it came from) shows two `hx8399c`
+nodes:
+
+| Node | Resolution |
+| --- | --- |
+| `qcom,mdss_dsi_hx8399c_truly_video` | 1080x2160 |
+| `qcom,mdss_dsi_hx8399c_hd_video` | 720x1440 |
+
+and on `mdss_dsi_ctrl0@1a94000`, `qcom,dsi-pref-prim-pan` is phandle `0x7f` —
+which belongs to the **truly** node. So the DSI link is configured for a
+1080x2160 panel on hardware whose screen is 720x1520 (Xiaomi's own spec page:
+HD+ 720x1520).
+
+That is a boot failure, not a rounding difference. Flashing this DTB unchanged
+feeds the panel a timing it cannot display. The fix is an overlay that
+repoints `qcom,dsi-pref-prim-pan` at the `hd` node — a device-tree change to
+Astrix's own overlay, not a kernel change.
+
+### Seeing what the display path is actually doing
+
+Because the vendor kernel drives the panel through fbdev, `/dev/fb0` is the only
+place the pixels are while the panel is being lit:
+
+```sh
+./scripts/port-redmi-8a.sh boot-test fb        # phone, over adb
+./scripts/fb-screenshot.sh                    # or a device / dump directly
+```
+
+It reads the device's own sysfs for geometry, refuses to read a buffer too short
+to be a framebuffer, and decodes 16bpp RGB565 / 24bpp / 32bpp BGRA with the real
+stride. A good capture proves the compositor is drawing correct pixels at the
+panel's geometry — and says loudly that it does **not** prove the DSI link is
+carrying them, because the framebuffer is upstream of the link.
 
 **None of this is a boot.** The kernel drives the panel through the Android
 framebuffer stack (`FB_MSM_MDSS`), not DRM/KMS, so wlroots' DRM backend will not

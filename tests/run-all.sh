@@ -328,6 +328,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The framebuffer screenshot tool is how a real phone's display gets looked at
+# without trusting the person holding it. The vendor kernel drives the panel via
+# fbdev (FB_MSM_MDSS), not DRM/KMS, so /dev/fb0 is the only place the pixels are
+# while the panel is being lit. A wrong decode there does not look like a tool
+# bug - it looks like a dead display driver - so the decode is pinned against
+# hand-computed pixels and against a megapixel framebuffer at the Redmi 8A's
+# real geometry.
+banner "framebuffer screenshot decode"
+if bash tests/test-fb-screenshot.sh 2>&1 | sed 's/^/      /'; then
+  record "test-fb-screenshot" 0
+else
+  record "test-fb-screenshot" 1
+fi
+
+# ---------------------------------------------------------------------------
 # The first thing a "boot it with a display" port has to get right is not the
 # driver: it is whether the panel can physically be driven over the MIPI DSI
 # link at all. That is arithmetic, it can be checked on the host in seconds,

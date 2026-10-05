@@ -406,6 +406,21 @@ for p in "${PROFILES[@]}"; do
         err "a building vendor kernel must not be reported as a verified boot"; exit 1; }
       [ "${DEVICE_BOOT_TEST_EXPECTS_DISPLAY}" = "no" ] || {
         err "a kernel that only builds must not be expected to light the panel"; exit 1; }
+
+      # V32: the vendor device tree's preferred panel node does not match this
+      # hardware. That is a known defect, so the profile has to say so - and the
+      # requirement is unconditional. Making it conditional on the field already
+      # being set would be a guard that switches itself off the moment it
+      # matters: a profile that quietly dropped these keys would read like
+      # "the panel timings are fine now", which is the opposite of the truth and
+      # exactly the kind of thing that gets flashed to a phone.
+      [ -n "${DEVICE_VENDOR_KERNEL_PANEL_PREFERRED:-}" ] || {
+        err "does not record which panel node the vendor DT prefers (V32: it is wrong, and that has to be written down)"; exit 1; }
+      [ -n "${DEVICE_VENDOR_KERNEL_PANEL_CORRECT:-}" ] || {
+        err "records a preferred panel node but not the correct one to point it at"; exit 1; }
+      [ -n "${DEVICE_VENDOR_KERNEL_PANEL_NOTE:-}" ] || {
+        err "records a wrong preferred panel node with no explanation of why"; exit 1; }
+      pass "${dev}: records the vendor DT's preferred panel node and the one to use instead"
     fi
     exit 0
   ) > /tmp/astrix-profile-check.$$ 2>&1 && \

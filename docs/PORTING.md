@@ -262,7 +262,7 @@ Two limits worth stating rather than discovering:
 * `fastboot`-style screenshots of the console are not the compositor's output.
   The UI is inspected through `build/screens/`.
 
-Run the host test suite — 44 tests, no hardware, no QEMU — with:
+Run the host test suite — 47 tests, no hardware, no QEMU — with:
 
 ```bash
 ./tests/run-all.sh --fast
