@@ -31,7 +31,9 @@ concurrency:
 
 jobs:
   host-tests:
-    name: host tests (44 checks)
+    # No count in the name: the suite grows, and a stale number in a job label
+    # is a small lie that outlives the change that caused it.
+    name: host tests
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 

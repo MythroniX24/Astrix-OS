@@ -293,13 +293,12 @@ Result: `arch/arm64/boot/Image`, 30 MB, plus both DTBs. The build was re-run
 from a `git checkout -- .` pristine tree so the script's own patching is
 verified, not just the incremental result.
 
-**What the device tree actually says** (checked, not assumed): the Redmi 8A
-panel is `dsi_hx8399c_truly_vid`, a 1080x2160 video-mode DSI panel at 60 Hz
-with 48–60 Hz dynamic FPS, driven by `qcom,mdss_dsi_pll_8937`. One thing worth
-flagging: the preferred panel node advertises **1080x2160**, which does not
-match the 720x1520 the device profile records. Both `dsi_hx8399c_truly_vid`
-(FHD+) and `dsi_hx8399c_hd_vid` (720x1440) exist in the tree. This is
-unresolved and is exactly the kind of thing that only a real boot would settle.
+**What the device tree actually says** (checked, not assumed): the Redmi 8A has
+two `hx8399c` video-mode DSI panels at 60 Hz with 48–60 Hz dynamic FPS, driven by
+`qcom,mdss_dsi_pll_8937` — `dsi_hx8399c_truly_vid` at 1080x2160 and
+`dsi_hx8399c_hd_vid` at 720x1440. At this point the preferred node was recorded
+as an unresolved conflict with the profile's 720x1520. **V32 resolves it, and it
+is a vendor-tree bug rather than an ambiguity** — see below.
 
 **Still not true:** the kernel drives the panel through the Android framebuffer
 stack, not DRM/KMS, so nothing has been bridged to Astrix's compositor yet, and
@@ -314,7 +313,7 @@ limitations — it belongs on a machine with cores.
 
 `.github/workflows/ci.yml` runs `./tests/run-all.sh` unmodified on
 `ubuntu-22.04` on every push and pull request. It is the same script, the same
-44 checks, the same exit status. Deliberately **not** `--fast`: on a cold
+the same checks, the same exit status. Deliberately **not** `--fast`: on a cold
 runner `--fast` skips the package-manifest test, which is the check that catches
 a package name that does not exist in the target suite. A green run that quietly
 dropped a real test would be worse than no CI.
